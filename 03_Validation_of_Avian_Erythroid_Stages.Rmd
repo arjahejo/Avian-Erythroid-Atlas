@@ -1,0 +1,234 @@
+
+```{r}
+################################################################################
+# PROJECT: Structural and Temporal Constraints in Avian Erythrocytes
+# SCRIPT:  03_Validation_of_Avian_Erythroid_Stages.R
+#Public Bulk RNA-seq validation of scRNA-defined erythroid stages
+# 
+# PURPOSE: Validation of scRNA-defined erythroid stages using independent public bulk RNA-seq datasets.
+#
+# DATA SOURCES:
+#   1. Richard et al. (2016) - Chicken T2EC (Progenitors vs. Differentiated)
+#   2. NCBI SRA PRJNA305527 - Immature Erythrocytes
+#   3. NCBI SRA PRJNA445563 - Mature Erythrocytes
+################################################################################
+
+# --- 1. Load All Required Libraries ---
+library(Seurat)      # Single-cell analysis
+library(tidyverse)   # Data wrangling (dplyr, ggplot2, tidyr)
+library(edgeR)       # Bulk RNA-seq normalization
+library(pheatmap)    # Correlation heatmaps
+library(openxlsx)    # Exporting result tables
+
+# --- 2. Directory Setup ---
+# Set working directory to the project root (if not using Rproj)
+# setwd("path/to/repository") 
+if (!dir.exists("./Results")) dir.create("./Results")
+if (!dir.exists("./Processed_Objects")) dir.create("./Processed_Objects")
+if (!dir.exists("./External_Data_File")) dir.create("./External_Data_File")
+
+# ==============================================================================
+# SCRIPT 3A: PREPARE SCRNA-SEQ REFERENCE (AVERAGE EXPRESSION)
+# ==============================================================================
+
+# 3. Load the Integrated Avian Atlas (from Script 02)
+# We use the integrated object because it contains the full developmental spectrum from marrow progenitors to terminal blood maturity.
+chicken <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+
+# Ensure RNA assay is used for bulk-to-single-cell comparison
+chicken <- NormalizeData(chicken, assay = "RNA")
+
+# Set standard identities and order
+Idents(chicken) <- "seurat_clusters"
+new_cluster_names_chicken <- c(
+  "0" = "Late polychromatic blast", "1" = "Mid polychromatic blast",
+  "2" = "Late erythroblast", "3" = "Erythroid progenitor 2",
+  "4" = "Early polychromatic blast", "5" = "Erythroid progenitor 1",
+  "6" = "Immature erythrocyte", "8" = "Early erythroblast",
+  "9" = "Mature erythrocyte-C"
+)
+chicken <- RenameIdents(chicken, new_cluster_names_chicken)
+custom_order_chicken <- c(
+  "Mature erythrocyte-C", "Immature erythrocyte", "Late polychromatic blast", 
+  "Mid polychromatic blast", "Early polychromatic blast", "Late erythroblast", 
+  "Early erythroblast", "Erythroid progenitor 2", "Erythroid progenitor 1"
+)
+Idents(chicken) <- factor(Idents(chicken), levels = custom_order_chicken)
+
+# 4. Generate Pseudobulk Profiles
+chicken_avg_list <- AverageExpression(chicken, assays = "RNA", slot = "data")
+chicken_avg_exp_df <- as.data.frame(chicken_avg_list$RNA)
+
+# ==============================================================================
+# SCRIPT 3B: BONE MARROW VALIDATION (RICHARD ET AL. 2016)
+# ==============================================================================
+
+# 5. Load and Normalize Richard 2016 Bulk Data
+# ------------------------------------------------------------------------------
+# SOURCE: Richard et al. (2016), PLOS Biology (DOI: 10.1371/journal.pbio.1002585).
+# BIO-CONTEXT: Chicken T2EC erythroid progenitors (LM1: Self-renewal; DM17: 48h Differentiation).
+# 
+# GENERATION/RE-ANNOTATION LOGIC:
+# The original dataset (OSF: matrix_2793.txt) utilizes legacy Ensembl v4 identifiers. 
+# To ensure compatibility with modern scRNA-seq annotations, a custom re-annotation 
+# pipeline was implemented:
+#   1. Transcript sequences from Ensembl v4 were aligned to Ensembl v7 using BLASTn.
+#   2. High-confidence alignments were used to map legacy IDs to official Gene Symbols.
+#   3. This process produced the 'Richard2016_Bulk_T2EC.csv' reference used here.
+# ------------------------------------------------------------------------------
+
+# Ensure the re-annotated file is placed in your local directory structure
+rna_data <- read.csv("./Raw_Data/External_Data_File/Richard2016_Bulk_T2EC.csv", stringsAsFactors = FALSE)
+# Filter for rows that have a Symbol.
+rna_data_filtered <- rna_data[!is.na(rna_data$Symbol) & rna_data$Symbol != "", ]
+# Remove duplicated gene symbols.
+rna_data_filtered <- rna_data_filtered[!duplicated(rna_data_filtered$Symbol), ]
+# Prepare count matrix for edgeR normalization (LM1 and DM17 conditions)
+count_matrix <- rna_data_filtered[, c("AT276_LM1", "JV47_LM1", "AT276_DM17", "JV47_DM17")]
+rownames(count_matrix) <- rna_data_filtered$Symbol
+
+# 6. edgeR Log-CPM Normalization
+dge <- DGEList(counts = count_matrix)
+keep <- filterByExpr(dge)
+dge <- dge[keep, , keep.lib.sizes = FALSE]
+dge <- calcNormFactors(dge)
+logCPM <- cpm(dge, log = TRUE, prior.count = 1)
+logCPM_df <- as.data.frame(logCPM)
+
+# Average biological replicates (AT276 & JV47) for final correlation
+logCPM_df$LM1 <- rowMeans(logCPM_df[, c("AT276_LM1", "JV47_LM1")])
+logCPM_df$DM17 <- rowMeans(logCPM_df[, c("AT276_DM17", "JV47_DM17")])
+chicken_avg_exp_df$Symbol <- rownames(chicken_avg_exp_df)
+logCPM_df$Symbol <- rownames(logCPM_df)
+chicken_avg_exp_df$Symbol <- toupper(chicken_avg_exp_df$Symbol)
+logCPM_df$Symbol <- toupper(logCPM_df$Symbol)
+
+# 7. Pearson Correlation Analysis
+merged_data <- inner_join(chicken_avg_exp_df, logCPM_df, by = "Symbol")
+if (nrow(merged_data) == 0) {
+  stop("Merge failed. Please double-check 'head(rownames(chicken))' and 'head(rna_data$Symbol)' to confirm their formats are identical.")
+} else {
+  cat("Success! Merged data contains", nrow(merged_data), "common genes.\n")
+}
+
+# Save Comparison Results 
+output_dir <- "." 
+cat("\n--- Saving Merged Data for Supplementary Table 4 ---\n")
+supp_table_s4_filename <- file.path(output_dir, "./Results/Supplementary Table 4.xlsx")
+write.xlsx(merged_data, file = supp_table_s4_filename, rowNames = FALSE, overwrite = TRUE)
+cat("Supplementary Table 4 saved successfully to:", supp_table_s4_filename, "\n")
+
+# Visualize Correlation Heatmap
+sc_cluster_cols <- custom_order_chicken
+bulk_sample_cols <- c("LM1", "DM17") 
+expression_data <- merged_data[, c(sc_cluster_cols, bulk_sample_cols)]
+cor_matrix <- cor(expression_data[, sc_cluster_cols], expression_data[, bulk_sample_cols], method = "pearson")
+# Save the final heatmap.
+pdf("./Results/Figure-2D.pdf", width = 6, height = 4)
+pheatmap(
+  cor_matrix,
+  cluster_rows = FALSE,  
+  cluster_cols = FALSE,  
+  color = colorRampPalette(c("#9ECAE1", "#FFFFFF", "#F4B6AE"))(100),
+  main = "Correlation: scRNA Clusters vs Averaged Bulk Samples",
+  fontsize = 10,
+  fontsize_row = 10,
+  fontsize_col = 12,
+  fontsize_number = 10,     # <-- increase numbers inside tiles
+  angle_col = 0,
+  display_numbers = TRUE, number_format = "%.2f"
+)
+dev.off()
+
+cat("Analysis complete. The final, validated plot has been saved.\n")
+
+# ==============================================================================
+# SCRIPT 3C: TERMINAL MATURATION VALIDATION (POLARIZED ERYTHROCYTES)
+# ==============================================================================
+
+# 8. Load and Process Polarized Bulk Data (Immature vs. Mature)
+# ------------------------------------------------------------------------------
+# # 8. Load and Process Polarized Bulk Data (Immature vs. Mature)
+# SOURCE: Immature (SRR2983618; PRJNA305527) & Mature (SRR6893554; PRJNA445563).
+# PROCESSING: FASTQs quantified via Salmon (quasi-mapping) and summarized to 
+# gene-level symbols via the tximport R package.
+#
+# PROCESSING RATIONALE:
+# Raw FASTQ files were quantified using Salmon in quasi-mapping mode against 
+# the G. gallus transcriptome. Transcript abundances were summarized to 
+# gene-level counts via the 'tximport' R package. Custom mapping files were 
+# used to aggregate counts into Ensembl IDs and official Gene Symbols.
+# ------------------------------------------------------------------------------
+
+cat("--- Part 1: Processing Bulk RNA-seq Data ---\n")
+mature_path <- "./Raw_Data/External_Data_File/Mature_Ery.csv"
+immature_path <- "./Raw_Data/External_Data_File/Immature_Ery.csv"
+mature_df <- read.csv(mature_path)
+immature_df <- read.csv(immature_path)
+colnames(mature_df) <- c("Gene_ID", "Gene", "Mature")
+colnames(immature_df) <- c("Gene_ID", "Gene", "Immature")
+
+# Merge conditions and perform Library Size Normalization (logCPM)
+combined_bulk <- full_join(mature_df, immature_df, by = c("Gene_ID", "Gene"))
+combined_bulk <- combined_bulk %>%
+  mutate(
+    Mature = ifelse(is.na(Mature), 0, Mature),
+    Immature = ifelse(is.na(Immature), 0, Immature)
+  )
+lib_size_mature <- sum(combined_bulk$Mature)
+lib_size_immature <- sum(combined_bulk$Immature)
+bulk_norm_data <- combined_bulk %>%
+  mutate(
+    Mature_logCPM = log2(((Mature / lib_size_mature) * 1e6) + 1),
+    Immature_logCPM = log2(((Immature / lib_size_immature) * 1e6) + 1),
+    Gene = toupper(trimws(Gene))  # <--- ADD THIS LINE HERE
+  ) %>%
+  dplyr::select(Gene, Mature_logCPM, Immature_logCPM) %>%
+  filter(!is.na(Gene) & Gene != "")
+
+# 9. Pearson Correlation Analysis (Figure 2E)
+cat("\n--- Part 2: Merging data using existing Average Expression ---\n")
+
+# RATIONALE: We do NOT reload the Seurat object. 
+# We reuse 'chicken_avg_exp_df' which was created in Section 4.
+
+# Standardize the Single-Cell Gene names to Uppercase
+# (Matches the uppercase conversion you did for bulk data in Section 8)
+chicken_avg_exp_df$Symbol <- toupper(trimws(rownames(chicken_avg_exp_df))) 
+
+# Merge Data
+# FIX: Use 'chicken_avg_exp_df' and 'bulk_norm_data' (the names you actually used)
+merged_terminal <- inner_join(chicken_avg_exp_df, bulk_norm_data, by = c("Symbol" = "Gene"))
+
+if (nrow(merged_terminal) == 0) {
+  stop("Merge failed for Terminal comparison. Check Gene Symbol formatting.")
+} else {
+  cat("Success! Merged terminal data contains", nrow(merged_terminal), "common genes.\n")
+}
+
+# Calculate Correlation and Plot Heatmap
+# Select columns based on names in merged_terminal
+cor_matrix_terminal <- cor(
+  merged_terminal[, custom_order_chicken], 
+  merged_terminal[, c("Immature_logCPM", "Mature_logCPM")], 
+  method = "pearson"
+)
+colnames(cor_matrix_terminal) <- c("Bulk Immature", "Bulk Mature")
+
+# Visualize Correlation Heatmap (Figure 2E)
+pdf("./Results/Figure-2E.pdf", width = 6, height = 4)
+pheatmap(
+  cor_matrix_terminal,
+  cluster_rows = FALSE, cluster_cols = FALSE,
+  color = colorRampPalette(c("#9ECAE1", "#FFFFFF", "#F4B6AE"))(100),
+  main = "Correlation: scRNA vs Bulk Erythrocytes",
+  display_numbers = TRUE, number_format = "%.2f",
+  fontsize = 10, angle_col = 0
+)
+dev.off()
+
+cat("\nValidation Analysis Complete. Figures 2D, 2E generated in ./Results/\n")
+```
+
+
+
