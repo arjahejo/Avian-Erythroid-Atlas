@@ -22,29 +22,29 @@ Run all scripts using the R v4.4.3 / Seurat v5 environment.
 ##Directory Structure
 
 Avian-Erythroid-Atlas/
-├── 01_Avian_Erythroid_Atlas_BoneMarrow.Rmd        # Script 1: Atlas Construction
-├── 02_Integration_Avian_Erythroid_Atlas_PB.Rmd    # Script 2: Blood-Marrow Integration
-├── 03_Validation_of_Avian_Erythroid_Stages.Rmd    # Script 3: Bulk RNA-seq Validation
-├── 04_Comparative_Human_vs_Avian.Rmd             # Script 4: Cross-species Analysis
-├── Raw_Data/                                      # Input Data
-│   ├── Primary_Avian_Marrow/                      # GEO: GSE315210
-│   │   ├── BM_1/                                  # 10X Replicate 1
-│   │   └── BM_2/                                  # 10X Replicate 2
+├── 01_Avian_Erythroid_Atlas_BoneMarrow.Rmd         # Script 1: Atlas Construction
+├── 02_Integration_Avian_Erythroid_Atlas_PB.Rmd     # Script 2: Blood-Marrow Integration
+├── 03_Validation_of_Avian_Erythroid_Stages.Rmd     # Script 3: Bulk RNA-seq Validation
+├── 04_Comparative_Human_vs_Avian.Rmd               # Script 4: Cross-species Analysis
+├── Raw_Data/                                       # Input Data
+│   ├── Primary_Avian_Marrow/                       # GEO: GSE315210
+│   │   ├── BM_1/                                   # 10X Replicate 1
+│   │   └── BM_2/                                   # 10X Replicate 2
 │   └── Public_Reference_Data/
-│       ├── Human_Atlas_HscRNA/                    # GEO: GSE253355
-│       └── Maxwell_2024_PBscRNA/
-│           ├── PBscRNA_1/                         # Blood Replicate 1
-│           ├── PBscRNA_2/                         # Blood Replicate 2
-│           ├── PBscRNA_3/                         # Blood Replicate 3
-│           └── PBscRNA_4/                         # Blood Replicate 4
-│       └── Pavani_2024/                           # iPSC Dataset (GSE242101)
-├── Processed_Objects/                             # Generated .RData and .rds files
-├── Results/                                       # Primary Figures
-│   └── Result_Supporting_Files/                  # Diagnostic and QC plots
-├── Environment/                                   # renv.lock and session_info.txt
-├── External_Data_File/                            # Ortholog mappings & Bulk CSVs
-├── External_Data_Guide.md                         # Detailed data source documentation
-└── Readme.md                                      # This file
+│       ├── Human_Atlas_HscRNA/                     # GEO: GSE253355
+│       ├── Maxwell_2024_PBscRNA/
+│       │   ├── PBscRNA_1/                          # Blood Replicate 1
+│       │   ├── PBscRNA_2/                          # Blood Replicate 2
+│       │   ├── PBscRNA_3/                          # Blood Replicate 3
+│       │   └── PBscRNA_4/                          # Blood Replicate 4
+│       └── Pavani_2024/                            # iPSC Dataset (GSE242101)
+├── Processed_Objects/                              # Generated .RData and .rds files
+├── Results/                                        # Primary Figures
+│   └── Result_Supporting_Files/                   # Diagnostic and QC plots
+├── Environment/                                    # renv.lock and session_info.txt
+├── External_Data_File/                             # Ortholog mappings & Bulk CSVs
+├── External_Data_Guide.md                          # Detailed data source documentation
+└── Readme.md                                       # This file
 
 ##Data Access
 Primary Avian Marrow: Download from NCBI GEO GSE315210.
