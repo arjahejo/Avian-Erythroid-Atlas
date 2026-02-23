@@ -19,10 +19,30 @@ Decompress and rename it to BMscRNA_integrated.RData.
 Place it in ./Processed_Objects/.
 Run all scripts using the R v4.4.3 / Seurat v5 environment.
 
-##Directory Structure
+## Directory Structure
 
+```text
 Avian-Erythroid-Atlas/
-<pre> ```text Avian-Erythroid-Atlas/ ├── 01_Avian_Erythroid_Atlas_BoneMarrow.Rmd ├── 02_Integration_Avian_Erythroid_Atlas_PB.Rmd ├── 03_Validation_of_Avian_Erythroid_Stages.Rmd ├── 04_Comparative_Human_vs_Avian.Rmd ├── Raw_Data/ │ ├── Primary_Avian_Marrow/ │ │ ├── BM_1/ │ │ └── BM_2/ │ └── Public_Reference_Data/ │ ├── Human_Atlas_HscRNA/ │ ├── Maxwell_2024_PBscRNA/ │ └── Pavani_2024/ ├── Processed_Objects/ ├── Results/ │ └── Result_Supporting_Files/ ├── Environment/ ├── External_Data_File/ ├── External_Data_Guide.md └── Readme.md ``` </pre>
+├── 01_Avian_Erythroid_Atlas_BoneMarrow.Rmd
+├── 02_Integration_Avian_Erythroid_Atlas_PB.Rmd
+├── 03_Validation_of_Avian_Erythroid_Stages.Rmd
+├── 04_Comparative_Human_vs_Avian.Rmd
+├── Raw_Data/
+│   ├── Primary_Avian_Marrow/
+│   │   ├── BM_1/
+│   │   └── BM_2/
+│   └── Public_Reference_Data/
+│       ├── Human_Atlas_HscRNA/
+│       ├── Maxwell_2024_PBscRNA/
+│       └── Pavani_2024/
+├── Processed_Objects/
+├── Results/
+│   └── Result_Supporting_Files/
+├── Environment/
+├── External_Data_File/
+├── External_Data_Guide.md
+└── Readme.md
+```
 
 ##Data Access
 Primary Avian Marrow: Download from NCBI GEO GSE315210.
