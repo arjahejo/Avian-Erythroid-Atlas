@@ -1,23 +1,55 @@
-#Avian erythropoiesis reveals mechanisms of nuclear retention and the ontogeny of erythrocyte immunity
+# Avian erythropoiesis reveals mechanisms of nuclear retention and the ontogeny of erythrocyte immunity
 
 ![R version 4.4.3+](https://img.shields.io/badge/R-4.4.3+-blue.svg)
 ![Seurat 5.3.0](https://img.shields.io/badge/Seurat-5.3.0-orange.svg)
 ![MIT License](https://img.shields.io/badge/License-MIT-green.svg)
 
-##Project Overview
+## Project Overview
 This repository contains the complete analytical pipeline for the study: **"Avian erythropoiesis reveals mechanisms of nuclear retention and the ontogeny of erythrocyte immunity"** (Jahejo et al., 2026).
 
-##Multi-Environment Reproducibility
+## Multi-Environment Reproducibility
 Due to updates in the Seurat integration ecosystem, this project utilizes two distinct computational environments:
-Workflow Stage	Component	Software Requirement
-Legacy Integration	Script 01 (Phase 1A)	R v4.1.3 + Seurat v4.1.3
-Main Analysis	Scripts 01 (Phase 1B), 02, 03, 04	R v4.4.3 + Seurat v5.3.0
-Recommended Execution Path
+
+| Workflow Stage | Component | Software Requirement |
+| :--- | :--- | :--- |
+| **Legacy Integration** | Script 01 (Phase 1A) | R v4.1.3 + Seurat v4.1.3 |
+| **Main Analysis** | Scripts 01 (Phase 1B), 02, 03, 04 | R v4.4.3 + Seurat v5.3.0 |
+
+### Recommended Execution Path
 To avoid environment conflicts, users are encouraged to skip Phase 1A and begin directly with the main analysis (Phase 1B) using the pre-integrated data:
-Download GSE315210_BMscRNA_integrated.rdata.gz from GEO.
-Decompress and rename it to BMscRNA_integrated.RData.
-Place it in ./Processed_Objects/.
-Run all scripts using the R v4.4.3 / Seurat v5 environment.
+1. Download `GSE315210_BMscRNA_integrated.rdata.gz` from GEO.
+2. Decompress and rename it to `BMscRNA_integrated.RData`.
+3. Place it in `./Processed_Objects/`.
+4. Run all scripts using the R v4.4.3 / Seurat v5 environment.
+
+## Data Access
+Primary Avian Marrow: Download from NCBI GEO GSE315210.
+Human Reference Atlas: Download processed Seurat object from NCBI GEO GSE253355.
+Avian Peripheral Blood: Download 10x outputs from the maxwelma/exjobb GitHub repository.
+Bulk Validation:
+T2EC Progenitors: Richard et al. 2016 (Provided as re-annotated CSV in External_Data_File/).
+Polarized Erythrocytes: PRJNA305527 & PRJNA445563 (Provided as CSV in External_Data_File/).
+
+## Setup & Analysis Workflow
+1. Environment Setup (Main Analysis)
+We use renv to manage dependencies for the Seurat v5 environment. To restore:
+install.packages("renv")
+renv::restore() # Run this in the project root
+
+2. Script Details
+[01] Bone Marrow Atlas: Handles SCTransform, cell-cycle regression, and annotation of the marrow lineage. (Phase 1A: Seurat v4; Phase 1B: Seurat v5).
+[02] Blood Integration: Integrates mature circulating erythrocytes and performs metabolic pathway scoring (scMetabolism).
+[03] Bulk Validation: Correlates single-cell clusters with established bulk RNA-seq models to verify developmental stage identities.
+[04] Comparative Analysis: The core cross-species comparison. Features include Monocle3 trajectory modeling, VIPER/DoRothEA TF activity profiling, and CellChat niche signaling.
+
+## Citation
+If you use this code or the Avian Erythroid Atlas, please cite:
+Jahejo et al. (2026). Avian erythropoiesis reveals mechanisms of nuclear retention and the ontogeny of erythrocyte immunity (In Review).
+
+## License & Contact
+Distributed under the MIT License. For technical queries, please open an issue in this repository or contact the author Ali Raza Jahejo at arjahejo@gmail.com.
+
+---
 
 ## Directory Structure
 ```text
@@ -44,30 +76,3 @@ Avian-Erythroid-Atlas/
 ├── External_Data_File/                                  # Ortholog mappings & Bulk CSVs
 ├── External_Data_Guide.md                               # Detailed data source documentation
 └── README.md                                            # This file
-
-##Data Access
-Primary Avian Marrow: Download from NCBI GEO GSE315210.
-Human Reference Atlas: Download processed Seurat object from NCBI GEO GSE253355.
-Avian Peripheral Blood: Download 10x outputs from the maxwelma/exjobb GitHub repository.
-Bulk Validation:
-T2EC Progenitors: Richard et al. 2016 (Provided as re-annotated CSV in External_Data_File/).
-Polarized Erythrocytes: PRJNA305527 & PRJNA445563 (Provided as CSV in External_Data_File/).
-
-##Setup & Analysis Workflow
-1. Environment Setup (Main Analysis)
-We use renv to manage dependencies for the Seurat v5 environment. To restore:
-install.packages("renv")
-renv::restore() # Run this in the project root
-
-2. Script Details
-[01] Bone Marrow Atlas: Handles SCTransform, cell-cycle regression, and annotation of the marrow lineage. (Phase 1A: Seurat v4; Phase 1B: Seurat v5).
-[02] Blood Integration: Integrates mature circulating erythrocytes and performs metabolic pathway scoring (scMetabolism).
-[03] Bulk Validation: Correlates single-cell clusters with established bulk RNA-seq models to verify developmental stage identities.
-[04] Comparative Analysis: The core cross-species comparison. Features include Monocle3 trajectory modeling, VIPER/DoRothEA TF activity profiling, and CellChat niche signaling.
-
-##Citation
-If you use this code or the Avian Erythroid Atlas, please cite:
-Jahejo et al. (2026). Avian erythropoiesis reveals mechanisms of nuclear retention and the ontogeny of erythrocyte immunity (In Review).
-
-##License & Contact
-Distributed under the MIT License. For technical queries, please open an issue in this repository or contact the author Ali Raza Jahejo at arjahejo@gmail.com.
