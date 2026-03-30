@@ -20,7 +20,7 @@ Place it in ./Processed_Objects/.
 Run all scripts using the R v4.4.3 / Seurat v5 environment.
 
 ## Directory Structure
-
+```text
 Avian-Erythroid-Atlas/
 ├── 01_Avian_Erythroid_Atlas_BoneMarrow                  # Script 1: Atlas Construction
 ├── 02_Integration_Avian_Erythroid_Atlas_PeripheralBlood # Script 2: Blood-Marrow Integration
