@@ -1,0 +1,2876 @@
+
+```{r}
+################################################################################
+# PROJECT: Comparative single-cell analysis of human and chicken erythropoiesis highlights nuclear retention and early avian erythroid immunity
+# SCRIPT:  04_Comparative_Nuclear_Fate_Regulation_Human_vs_Avian.R
+# 
+# PURPOSE: This script establishes a high-resolution human benchmark to compare
+#          mammalian enucleation against avian nuclear retention.
+#
+# DATA SOURCE (Human): 
+#   Bandyopadhyay et al. (2024), Cell (DOI: 10.1016/j.cell.2024.04.013).
+#   NCBI GEO Accession: GSE253355.
+#
+# RATIONALE:
+#   Utilizes the human bone marrow atlas (HscRNA) from femoral head tissue. 
+#   Targeted sub-clustering of MEP, Erythroblast, Late Erythroid, and RBC 
+#   clusters captures the full spectrum of human erythropoiesis. This serves 
+#   as the basis for identifying divergent markers of enucleation across 
+#   the avian and human lineages.
+################################################################################
+
+
+# Load All Required Libraries ---
+
+library(Seurat)
+library(monocle3)
+library(CellChat)
+library(CytoTRACE)
+library(scMetabolism)
+library(viper)
+library(dorothea)
+library(clusterProfiler)
+library(biomaRt)
+library(org.Gg.eg.db)
+library(org.Hs.eg.db)
+library(tidyverse)
+library(dplyr)
+library(plyr)
+library(magrittr)
+library(ggplot2)
+library(ggpubr)
+library(pheatmap)
+library(patchwork)
+library(cowplot)
+library(ggsci)
+library(ggvenn)
+library(gridExtra)
+library(hdf5r)
+library(openxlsx)
+library(writexl)
+library(psych)
+library(BiocManager)
+library(SeuratWrappers)
+library(tidyr)
+library(RColorBrewer)
+library(glmGamPoi)
+library(ComplexHeatmap)
+library(grid)
+library(igraph)
+library(biomaRt)
+library(ggridges)
+
+
+# Directory Setup ---
+# Set working directory to the project root
+# setwd("path/to/repository") 
+if (!dir.exists("./Results")) dir.create("./Results")
+if (!dir.exists("./Processed_Objects")) dir.create("./Processed_Objects")
+if (!dir.exists("./Results/Result_Supporting_Files")) {
+  dir.create("./Results/Result_Supporting_Files", recursive = TRUE)
+}
+
+# ==============================================================================
+# SCRIPT 4A: HUMAN BONE MARROW REFERENCE (HscRNA) PROCESSING
+# ==============================================================================
+
+#  Load and Subset Human Data
+# Requirement: Download GSE253355_Normal_Bone_Marrow_Atlas_Seurat_SB_v2.rds.gz 
+# from GEO and place in the Raw_Data folder.
+Full_data <- readRDS("./Raw_Data/Public_Reference_Data/Human_Atlas_HscRNA/GSE253355.rds")
+# Targeted isolation of the hematopoietic compartment as per manuscript design
+selected_clusters <- c("Erythroblast", "Late Erythroid", "MEP", "RBC")
+HscRNA_1 <- subset(Full_data, idents = selected_clusters)
+
+# Processing and Dimensionality Reduction
+HscRNA_1 <- NormalizeData(HscRNA_1)
+HscRNA_1 <- FindVariableFeatures(HscRNA_1, selection.method = "vst", nfeatures = 2000)
+HscRNA_1 <- ScaleData(HscRNA_1)
+HscRNA_1 <- RunPCA(HscRNA_1, npcs = 50, verbose = FALSE)
+# Plot PC1 vs PC2
+pdf(
+  file = "./Results/S.Fig_3A.pdf",
+  width = 4,
+  height = 3
+)
+
+DimPlot(
+  HscRNA_1,
+  reduction = "pca",
+  dims = c(1, 2)
+)
+
+dev.off()
+
+# Generate an Elbow Plot for selecting PCs
+pdf(
+  file = "./Results/S.Fig_3B.pdf",
+  width = 4,
+  height = 3
+)
+
+ElbowPlot(
+  HscRNA_1,
+  ndims = 20
+)
+
+dev.off()
+# Perform UMAP and clustering
+HscRNA_1 <- RunUMAP(HscRNA_1, dims = 1:20)
+HscRNA_1 <- FindNeighbors(HscRNA_1, dims = 1:20)
+HscRNA_1 <- FindClusters(HscRNA_1, resolution = 0.4)
+# Set seed for reproducibility
+set.seed(1234)  # Choose any integer value
+# Save UMAP plot
+pdf(
+  file = "./Results/S.Fig_3D.pdf",
+  width = 3.5,
+  height = 3.5
+)
+
+DimPlot(
+  HscRNA_1,
+  reduction = "umap",
+  label = TRUE,
+  pt.size = 0.5
+) +
+  ggtitle("UMAP Clustering")
+
+dev.off()
+
+# Save violin plots for key features
+# Calculate cell counts for labels 
+# This counts how many cells are in each group within the HscRNA_1 object
+n_labels <- table(Idents(HscRNA_1)) 
+
+# Use a wide and short PDF size (10x5) since there are only 2 plots in one row
+pdf(file = "./Results/S.Fig_3C.pdf", width = 10, height = 5)
+
+vln_list <- lapply(
+  c("nFeature_RNA", "nCount_RNA"),
+  function(f) {
+    # pt.size = 0 removes the dots for a professional look
+    p <- VlnPlot(HscRNA_1, features = f, pt.size = 0) + ggtitle(f)
+    
+    # ADD MEDIAN LINE via boxplot (Satisfies Reviewer 4)
+    p <- p + geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA)
+    
+    # DYNAMIC 'n' LABELS
+    # Find the max value for the Y axis to place the text correctly
+    gene_data <- FetchData(HscRNA_1, vars = f)
+    max_y <- max(gene_data, na.rm = TRUE)
+    
+    p <- p + 
+      scale_y_continuous(expand = expansion(mult = c(0, 0.2))) + 
+      coord_cartesian(clip = "off") + 
+      annotate("text", 
+               x = 1:length(n_labels), 
+               y = max_y, 
+               label = n_labels, 
+               size = 3, 
+               angle = 45, 
+               vjust = 0.5, 
+               fontface = "bold") +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+        axis.title.x = element_blank(),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold")
+      ) +
+      NoLegend()
+    
+    return(p)
+  }
+)
+
+# Combine the 2 plots into a single row
+p_vln <- cowplot::plot_grid(plotlist = vln_list, ncol = 2)
+print(p_vln)
+dev.off()
+
+# High-Resolution Subsetting
+# Subset the dataset based on specific erythroid clusters (5, 1, 2, 8, 6, 0, 4, 9, 10)
+selected_clusters <- c(5, 1, 2, 8, 6, 0, 4, 9, 10)
+HscRNA <- subset(HscRNA_1, idents = selected_clusters)
+
+# Marker Identification
+HscRNA_markers <- FindAllMarkers(
+  HscRNA, 
+  only.pos = TRUE,     # Only positive markers (upregulated)
+  min.pct = 0.25,      # Genes expressed in at least 25% of cells
+  logfc.threshold = 0.25 # Log fold change greater than 0.25
+)
+# Save the top 20 markers to CSV
+top20 <- HscRNA_markers %>%
+  group_by(cluster) %>%
+  top_n(20, wt = avg_log2FC)
+write.csv(top20, file = paste0("./Results/Result_Supporting_Files/HscRNA_TOP20.csv"))
+
+# Save the UMAP plot for the selected erythroid clusters
+pdf(file = paste0("./Results/Result_Supporting_Files/HscRNA_UMAP_Selected_Clusters.pdf"))
+DimPlot(HscRNA, reduction = "umap", label = TRUE, pt.size = 0.5) + 
+  ggtitle("UMAP of Selected Clusters") 
+dev.off() 
+
+# Final Annotation Preparation
+# Reorder cluster identities explicitly to reflect biological maturation
+HscRNA <- SetIdent(HscRNA, 
+                         value = factor(Idents(HscRNA), levels = c(5, 1, 2, 8, 6, 0, 4, 9, 10)))
+# Save the primary human processed object
+saveRDS(HscRNA, file = "./Processed_Objects/HscRNA.rds")
+
+# ==============================================================================
+# SCRIPT 4B: HUMAN MATURATION PROFILING (CytoTRACE)
+# ==============================================================================
+
+# Subset the data to the selected clusters only
+HscRNA_red <- HscRNA
+# Make sure the clusters are reordered
+Idents(HscRNA_red) <- "seurat_clusters"
+# Subset HscRNA_red for only the selected maturation clusters
+selected_clusters <- c(5, 1, 2, 8, 6, 0, 4, 9, 10)
+HscRNA_red <- subset(HscRNA_red, idents = selected_clusters)
+# Extract the expression matrix (cells from selected clusters only)
+mat <- as.matrix(HscRNA_red@assays$RNA@counts)
+# Recreate phe so it matches exactly the cells in subset
+phe <- as.character(Idents(HscRNA_red))
+names(phe) <- colnames(HscRNA_red)
+
+# Run CytoTRACE Analysis
+# Define output directory within Results
+# Plot top 10 genes by CytoTRACE score
+ct_output <- "./Results/HscRNA_Cytotrace"
+if (!dir.exists(ct_output)) dir.create(ct_output, recursive = TRUE)
+results <- CytoTRACE(mat = mat)
+plotCytoGenes(results, numOfGenes = 10, outputDir = ct_output)
+# Plot CytoTRACE for the gene TFRC (One of the most widely used surface markers to stage human erythroid differentiation)
+plotCytoTRACE(results, phenotype = phe, gene = "TFRC", outputDir = ct_output)
+# Plot CytoTRACE with phenotype labels for your selected clusters
+plotCytoTRACE(results, phenotype = phe, outputDir = ct_output)
+# Plot CytoTRACE summary plot for your selected clusters
+plotCytoTRACE(results, phenotype = phe)
+
+# ==============================================================================
+# SCRIPT 4C: CHICKEN-HUMAN ORTHOLOG MAPPING (Ensembl BioMart, release 111)
+# ==============================================================================
+# PURPOSE:
+#   Build a one-to-one chicken-human ortholog table so avian and human erythroid
+#   expression can be compared on a shared human gene namespace.
+#
+# INPUT (manual BioMart export, done once):
+#   1. Open https://www.ensembl.org/biomart/martview (use a VPN if it won't load).
+#   2. Database: Ensembl Genes | Dataset: Chicken genes.
+#   3. Attributes > Gene: Gene stable ID, Gene stable ID version,
+#      Transcript stable ID, Transcript stable ID version.
+#   4. Attributes > Orthologues > Human: Human gene stable ID, Human gene name,
+#      Human homology type, Human orthology confidence.
+#   5. Results > Export all results to: File, TSV > Go. Save as:
+#      ./External_Data_File/biomart_chicken_human_raw.txt
+#
+# OUTPUT:
+#   orthologs_ALL_ensembl111.tsv      all chicken genes with a human ortholog
+#   orthologs_one2one_ensembl111.tsv  one-to-one orthologs only
+#
+# NOTES:
+#   - The raw file is never edited by hand; all filtering is done in code.
+#   - Human symbols shared by more than one chicken gene are dropped so the
+#     one-to-one table is unique on chicken ID, human ID and human symbol.
+# ==============================================================================
+
+library(Seurat)
+library(dplyr)
+library(readr)
+library(Matrix)
+
+# plyr is loaded earlier in this project and masks several dplyr verbs,
+# so the dplyr versions are pinned explicitly.
+summarise <- dplyr::summarise; mutate <- dplyr::mutate; arrange <- dplyr::arrange
+count <- dplyr::count; rename <- dplyr::rename; select <- dplyr::select
+filter <- dplyr::filter
+
+if (!dir.exists("./External_Data_File")) dir.create("./External_Data_File")
+
+# --- Input paths ---------------------------------------------------------------
+BM_FEATURE_FILES <- c("./Raw_Data/Primary_Avian_Marrow/BM_1/features.tsv.gz",
+                      "./Raw_Data/Primary_Avian_Marrow/BM_2/features.tsv.gz")
+PB_FEATURE_FILE  <- "./Raw_Data/Public_Reference_Data/Maxwell_2024_PBscRNA/PBscRNA_1/features.tsv"
+
+# --- Helper functions ------------------------------------------------------------
+
+# Read one features file: matrix row name, chicken Ensembl ID, chicken symbol
+read_features <- function(f) {
+  ft <- read_tsv(f, col_names = FALSE, col_types = cols(.default = "c"))
+  data.frame(row = make.unique(ft$X2), chicken_id = ft$X1, chicken_symbol = ft$X2)
+}
+
+# Chicken Ensembl ID <-> symbol map (BM_1 and BM_2 must be identical)
+build_feature_map <- function() {
+  maps <- lapply(BM_FEATURE_FILES, read_features)
+  stopifnot(all(sapply(maps[-1], identical, maps[[1]])))
+  m <- maps[[1]]
+  stopifnot(!anyDuplicated(m$row), !anyDuplicated(m$chicken_id))
+  m
+}
+
+# Gene symbols present in the peripheral blood reference
+pb_symbols <- function() read_tsv(PB_FEATURE_FILE, col_names = FALSE,
+                                  col_types = cols(.default = "c"))$X2
+
+load_one2one <- function() read_tsv("./External_Data_File/orthologs_one2one_ensembl111.tsv",
+                                    col_types = cols(.default = "c"))
+
+# Map chicken matrix rows to human symbols in two tiers:
+#   (1) Ensembl ID via the 1:1 table, (2) name bridge for rows already named
+#   with a human symbol. in_PB flags presence in the peripheral blood reference.
+chicken_rows_to_human <- function(rows) {
+  fm <- build_feature_map()
+  o  <- load_one2one() %>% distinct(chicken_id, human_symbol, confidence)
+  pb <- pb_symbols()
+  a <- fm %>% filter(row %in% rows) %>%
+    inner_join(o, by = "chicken_id") %>%
+    transmute(row, human_symbol, tier = "ensembl_id", confidence)
+  cand <- setdiff(rows, fm$row)
+  b <- data.frame(row = cand[cand %in% o$human_symbol], stringsAsFactors = FALSE) %>%
+    mutate(human_symbol = row, tier = "name_bridge") %>%
+    left_join(distinct(o, human_symbol, confidence), by = "human_symbol")
+  m <- bind_rows(a, b) %>% mutate(in_PB = row %in% pb)
+  stopifnot(!anyDuplicated(m$row))
+  cat("rows:", length(rows),
+      "| by ID:", sum(m$tier == "ensembl_id"),
+      "| by name bridge:", sum(m$tier == "name_bridge"),
+      "| human symbols:", n_distinct(m$human_symbol),
+      "| symbols fed by >1 row:", sum(table(m$human_symbol) > 1), "\n")
+  m
+}
+
+# Sum counts of rows mapping to the same human symbol; checks total counts
+collapse_counts_to_human <- function(cts, m) {
+  cts <- as(cts, "CsparseMatrix")
+  m   <- m[m$row %in% rownames(cts), ]
+  hs  <- unique(m$human_symbol)
+  M   <- sparseMatrix(i = match(m$human_symbol, hs), j = match(m$row, rownames(cts)),
+                      x = 1, dims = c(length(hs), nrow(cts)),
+                      dimnames = list(hs, rownames(cts)))
+  out <- M %*% cts
+  nz  <- cts; nz@x <- rep(1, length(nz@x))
+  overlap <- sum((M %*% nz)@x > 1)
+  cat("cells x symbols where >1 merged row is nonzero:", overlap, "\n")
+  stopifnot(isTRUE(all.equal(sum(out), sum(cts[m$row, ]))))
+  list(counts = out, map = m, overlap = overlap)
+}
+
+# Join per-sample count layers of a Seurat v5 object into one genes x cells matrix
+get_chicken_counts <- function(chicken, assay = "RNA") {
+  lay   <- grep("^counts", Layers(chicken[[assay]]), value = TRUE)
+  mats  <- lapply(lay, function(l) LayerData(chicken, assay = assay, layer = l))
+  feats <- Reduce(union, lapply(mats, rownames))
+  pad <- function(m) {
+    miss <- setdiff(feats, rownames(m))
+    if (length(miss)) m <- rbind(m, Matrix::sparseMatrix(
+      i = integer(0), j = integer(0), x = numeric(0),
+      dims = c(length(miss), ncol(m)), dimnames = list(miss, colnames(m))))
+    m[feats, , drop = FALSE]
+  }
+  cts <- do.call(cbind, lapply(mats, pad))
+  stopifnot(!anyDuplicated(colnames(cts)), all(colnames(chicken) %in% colnames(cts)))
+  cts[, colnames(chicken), drop = FALSE]
+}
+
+# --- Build ortholog tables (run once) --------------------------------------------
+
+raw <- read_tsv("./External_Data_File/biomart_chicken_human_raw.txt",
+                col_types = cols(.default = "c"), na = c("", "NA"))
+stopifnot(ncol(raw) == 8)
+colnames(raw) <- c("chicken_id", "chicken_id_v", "tx_id", "tx_id_v",
+                   "human_id", "human_symbol", "orthology_type", "confidence")
+
+# Keep chicken genes that have a human ortholog
+full <- raw %>% filter(!is.na(human_id)) %>%
+  select(chicken_id, human_id, human_symbol, orthology_type, confidence) %>% distinct()
+
+# Attach chicken symbols from the marrow features file
+sym <- build_feature_map() %>% distinct(chicken_id, chicken_symbol)
+stopifnot(!anyDuplicated(sym$chicken_id))
+full <- inner_join(full, sym, by = "chicken_id")
+
+# One-to-one orthologs only; drop human symbols shared by >1 chicken gene
+one2one <- full %>% filter(orthology_type == "ortholog_one2one", !is.na(human_symbol))
+dup_sym <- one2one$human_symbol[duplicated(one2one$human_symbol)]
+cat("Dropping", length(unique(dup_sym)), "human symbols shared by >1 gene\n")
+one2one <- one2one %>% filter(!human_symbol %in% dup_sym)
+
+stopifnot(!anyDuplicated(one2one$chicken_id), !anyDuplicated(one2one$human_id),
+          !anyDuplicated(one2one$human_symbol))
+
+write_tsv(full,    "./External_Data_File/orthologs_ALL_ensembl111.tsv")
+write_tsv(one2one, "./External_Data_File/orthologs_one2one_ensembl111.tsv")
+cat("All:", nrow(full), "| 1:1:", nrow(one2one), "\n")
+
+
+cat("--- Loading and Preparing Human and Avian Data ---\n")
+
+HscRNA <- readRDS("./Processed_Objects/HscRNA.rds")
+BMscRNA_PBscRNA <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+
+# Rename and subset human erythroid clusters
+new_cluster_names_human <- c(
+  "0" = "Polychromatic Erythroblast", "1" = "BFU-E", "2" = "CFU-E",
+  "4" = "Orthochromatic Erythroblast", "5" = "MEP", "6" = "Basophilic Erythroblast",
+  "8" = "Proerythroblast", "9" = "Reticulocyte", "10" = "Mature erythrocyte-H"
+)
+Idents(HscRNA) <- dplyr::recode(Idents(HscRNA), !!!new_cluster_names_human)
+
+human_order <- c("MEP", "BFU-E", "CFU-E", "Proerythroblast",
+                 "Basophilic Erythroblast", "Polychromatic Erythroblast",
+                 "Orthochromatic Erythroblast", "Reticulocyte", "Mature erythrocyte-H")
+HscRNA <- subset(HscRNA, idents = human_order)
+
+# Rename chicken clusters
+new_cluster_names_chicken <- c(
+  "0" = "Late polychromatic blast", "1" = "Mid polychromatic blast", "2" = "Late erythroblast",
+  "3" = "Erythroid progenitor 2", "4" = "Early polychromatic blast", "5" = "Erythroid progenitor 1",
+  "6" = "Immature erythrocyte", "8" = "Early erythroblast", "9" = "Mature erythrocyte-C"
+)
+Idents(BMscRNA_PBscRNA) <- dplyr::recode(Idents(BMscRNA_PBscRNA), !!!new_cluster_names_chicken)
+
+chicken_order <- c("Erythroid progenitor 1", "Erythroid progenitor 2",
+                   "Early erythroblast", "Late erythroblast",
+                   "Early polychromatic blast", "Mid polychromatic blast",
+                   "Late polychromatic blast", "Immature erythrocyte",
+                   "Mature erythrocyte-C")
+
+cat("--- Constructing Ortholog-Matched Profiles ---\n")
+
+# Human: average expression per cluster
+human_avg <- AverageExpression(HscRNA, assays = "RNA", layer = "data")$RNA
+
+# Chicken: counts -> human symbols -> CP10K -> collapse -> cluster averages
+cts   <- get_chicken_counts(BMscRNA_PBscRNA)
+m     <- chicken_rows_to_human(rownames(cts))
+cp10k <- cts %*% Matrix::Diagonal(x = 1e4 / Matrix::colSums(cts))  # depth over full transcriptome
+dimnames(cp10k) <- dimnames(cts)
+res   <- collapse_counts_to_human(cp10k, m)
+
+stage <- as.character(Idents(BMscRNA_PBscRNA))[match(colnames(res$counts), colnames(BMscRNA_PBscRNA))]
+chicken_avg <- sapply(split(seq_along(stage), stage),
+                      function(i) Matrix::rowMeans(res$counts[, i, drop = FALSE]))
+
+# Genes present in both species and verified in the peripheral blood reference
+ok <- m %>% group_by(human_symbol) %>% summarise(ok = any(in_PB)) %>%
+  filter(ok) %>% pull(human_symbol)
+genes_use <- intersect(intersect(rownames(human_avg), rownames(chicken_avg)), ok)
+cat("genes used for correlation:", length(genes_use), "\n")
+
+# Stop if any expected cluster is missing (a rename mismatch would otherwise drop it silently)
+stopifnot(all(human_order %in% colnames(human_avg)),
+          all(chicken_order %in% colnames(chicken_avg)))
+
+human_matched   <- human_avg[genes_use, human_order, drop = FALSE]
+chicken_matched <- chicken_avg[genes_use, chicken_order, drop = FALSE]
+
+cat("--- Calculating Spearman correlation matrix ---\n")
+cor_matrix <- cor(as.matrix(human_matched), as.matrix(chicken_matched), method = "spearman")
+
+cat("--- Generating Heatmap ---\n")
+graphics.off()
+heatmap_colors <- colorRampPalette(c("#1B9E77", "#FFFFFF", "#D95F02"))(100)
+
+pdf("./Results/S.Fig_4E.pdf", width = 7, height = 6)
+pheatmap(
+  cor_matrix,
+  color = heatmap_colors,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  display_numbers = TRUE,
+  number_format = "%.2f",
+  fontsize_number = 10,
+  fontsize_row = 12,
+  fontsize_col = 12,
+  border_color = "grey60",
+  main = "Spearman Correlation: Human vs Chicken Erythroid Clusters"
+)
+dev.off()
+
+cat("--- Saving correlation data to Excel ---\n")
+write.xlsx(
+  list("correlation_matrix" = as.data.frame(cor_matrix)),
+  "./Results/Result_Supporting_Files/Human_Chicken_Correlation_Analysis.xlsx",
+  rowNames = TRUE
+)
+
+
+
+# free memory from earlier sections (objects are re-read from disk when needed)
+rm(list = intersect(c("Full_data", "HscRNA_1", "HscRNA", "HscRNA_red", "HscRNA_markers",
+                      "mat", "results", "BMscRNA_PBscRNA", "cp10k", "human_avg",
+                      "chicken_avg", "human_matched", "chicken_matched", "top20"),
+                    ls()))
+gc()
+
+
+# ==============================================================================
+# SCRIPT 4D: UNIFIED CROSS-SPECIES UMAP (HUMAN + CHICKEN)
+# ==============================================================================
+# Integrate human and chicken erythroid cells on shared one-to-one orthologs
+# to test whether maturation stages align across species.
+
+set.seed(42)
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(Matrix)
+cat("--- Loading datasets ---\n")
+human   <- readRDS("./Processed_Objects/HscRNA.rds")
+chicken <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+
+cat("--- Mapping chicken genes to human symbols ---\n")
+cts <- get_chicken_counts(chicken)
+
+# Keep only genes present in ALL counts layers
+lay <- grep("^counts", Layers(chicken[["RNA"]]), value = TRUE)
+layer_genes <- lapply(lay, function(l) rownames(LayerData(chicken, assay = "RNA", layer = l)))
+cat("genes per layer:", sapply(layer_genes, length), "\n")
+common_layer_genes <- Reduce(intersect, layer_genes)
+cat("union:", nrow(cts), "| common to all layers:", length(common_layer_genes), "\n")
+cts <- cts[common_layer_genes, ]
+
+m   <- chicken_rows_to_human(rownames(cts))
+res <- collapse_counts_to_human(cts, m)
+
+# Genes shared by human and chicken; subset both
+shared <- intersect(rownames(human), rownames(res$counts))
+cat("genes shared by human and chicken:", length(shared), "\n")
+chicken_counts_sub <- res$counts[shared, ]
+human <- subset(human, features = shared)
+
+# Ortholog testability table (used by later scripts)
+testable <- m %>% group_by(human_symbol) %>%
+  summarise(testable_in_PB = any(in_PB),
+            low_confidence = any(confidence == "0", na.rm = TRUE))
+saveRDS(testable, "./Processed_Objects/ortholog_testability.rds")
+
+cat("--- Applying standardized stage names ---\n")
+
+# Chicken
+chicken_ortho <- CreateSeuratObject(counts = chicken_counts_sub, project = "Chicken")
+chicken_names <- c(
+  "5" = "Erythroid progenitor 1", "3" = "Erythroid progenitor 2",
+  "8" = "Early erythroblast",     "2" = "Late erythroblast",
+  "4" = "Early polychromatic blast", "1" = "Mid polychromatic blast",
+  "0" = "Late polychromatic blast",  "6" = "Immature erythrocyte",
+  "9" = "Mature erythrocyte-C"
+)
+chicken_ortho$stage <- plyr::revalue(as.character(Idents(chicken)[colnames(chicken_ortho)]), chicken_names)
+stopifnot(all(chicken_ortho$stage %in% unname(chicken_names)))  # no leftover numbers or NA
+print(table(chicken_ortho$stage))
+chicken_ortho$species <- "Chicken"
+
+# Human
+human_names <- c(
+  "5" = "MEP", "1" = "BFU-E", "2" = "CFU-E", "8" = "Proerythroblast",
+  "6" = "Basophilic Erythroblast", "0" = "Polychromatic Erythroblast",
+  "4" = "Orthochromatic Erythroblast", "9" = "Reticulocyte",
+  "10" = "Mature erythrocyte-H"
+)
+human$stage <- plyr::revalue(as.character(Idents(human)), human_names)
+stopifnot(all(human$stage %in% unname(human_names)))
+print(table(human$stage))
+human$species <- "Human"
+
+cat("--- Cross-species integration (dims 1:10) ---\n")
+obj_list <- list(Human = human, Chicken = chicken_ortho)
+
+# SCTransform per species
+obj_list <- lapply(obj_list, function(x) {
+  SCTransform(x, verbose = FALSE, method = "glmGamPoi", variable.features.n = 3000)
+})
+
+features <- SelectIntegrationFeatures(object.list = obj_list, nfeatures = 3000)
+obj_list <- PrepSCTIntegration(object.list = obj_list, anchor.features = features)
+
+set.seed(42)
+anchors <- FindIntegrationAnchors(
+  object.list = obj_list,
+  normalization.method = "SCT",
+  anchor.features = features,
+  reference = 1,          # human
+  reduction = "cca",
+  dims = 1:10
+)
+integrated_obj <- IntegrateData(anchorset = anchors, normalization.method = "SCT", dims = 1:10)
+
+integrated_obj <- RunPCA(integrated_obj, verbose = FALSE)
+integrated_obj <- RunUMAP(integrated_obj, reduction = "pca", dims = 1:10)
+
+maturation_order <- c(
+  "MEP", "Erythroid progenitor 1", "Erythroid progenitor 2", "BFU-E", "CFU-E",
+  "Proerythroblast", "Early erythroblast", "Basophilic Erythroblast",
+  "Late erythroblast", "Polychromatic Erythroblast", "Early polychromatic blast",
+  "Mid polychromatic blast", "Orthochromatic Erythroblast", "Late polychromatic blast",
+  "Immature erythrocyte", "Reticulocyte", "Mature erythrocyte-H", "Mature erythrocyte-C"
+)
+integrated_obj$stage <- factor(integrated_obj$stage, levels = maturation_order)
+
+# Panel A: species mixing
+p1 <- DimPlot(integrated_obj, reduction = "umap", group.by = "species",
+              cols = c("#1b9e77", "#d95f02")) +
+  theme_classic() + ggtitle("Unified Cross-Species Manifold (1:10)") +
+  theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5))
+
+# Panel B: stage alignment
+p2 <- DimPlot(integrated_obj, reduction = "umap", group.by = "stage",
+              label = TRUE, label.size = 3, repel = TRUE, label.box = TRUE) +
+  theme_classic() + NoLegend() + ggtitle("Homologous Maturation path") +
+  theme(plot.title = element_text(face = "bold", size = 14, hjust = 0.5))
+
+ggsave("./Results/Fig.3A.pdf", p1 + p2, width = 10, height = 6)
+saveRDS(integrated_obj, "./Processed_Objects/Unified_Atlas.rds")
+
+cat("--- 4D complete: Unified_Atlas.rds and Fig.3A.pdf saved ---\n")
+
+# ==============================================================================
+# SCRIPT 4E: TF ACTIVITY PROFILING (VIPER + DoRothEA) AND CROSS-SPECIES SRF TRAJECTORY
+# ==============================================================================
+#   (i)  Infer transcription factor (TF) activity along human erythroid
+#        maturation from the expression of regulon targets (VIPER + DoRothEA,
+#        confidence A and B), and export the 50 most variable TFs.
+#   (ii) Compare SRF along maturation in both species: inferred TF activity in
+#        human versus mRNA expression of the SRF ortholog in chicken.
+#
+target_tf <- "SRF"
+
+cat("Loading Seurat objects...\n")
+human_seurat   <- readRDS("./Processed_Objects/HscRNA.rds")
+chicken_seurat <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+
+# --- Stage names and maturation order -------------------------------------------
+custom_order_human <- c("MEP", "BFU-E", "CFU-E", "Proerythroblast",
+                        "Basophilic Erythroblast", "Polychromatic Erythroblast",
+                        "Orthochromatic Erythroblast", "Reticulocyte", "Mature erythrocyte-H")
+human_seurat$cell_type <- plyr::mapvalues(
+  x = as.character(human_seurat$seurat_clusters),
+  from = as.character(c(5, 1, 2, 8, 6, 0, 4, 9, 10)), to = custom_order_human)
+human_seurat$cell_type <- factor(human_seurat$cell_type, levels = custom_order_human)
+Idents(human_seurat) <- "cell_type"
+
+custom_order_chicken <- c("Erythroid progenitor 1", "Erythroid progenitor 2", "Early erythroblast",
+                          "Late erythroblast", "Early polychromatic blast", "Mid polychromatic blast",
+                          "Late polychromatic blast", "Immature erythrocyte", "Mature erythrocyte-C")
+chicken_seurat$cell_type <- plyr::mapvalues(
+  x = as.character(chicken_seurat$seurat_clusters),
+  from = as.character(c(5, 3, 8, 2, 4, 1, 0, 6, 9)), to = custom_order_chicken)
+chicken_seurat$cell_type <- factor(chicken_seurat$cell_type, levels = custom_order_chicken)
+Idents(chicken_seurat) <- "cell_type"
+
+# --- Human TF activity (VIPER + DoRothEA) ----------------------------------------
+# High-confidence regulons (A and B) so inferred activities rest on strong evidence
+cat("Calculating VIPER activity for Human...\n")
+data(dorothea_hs, package = "dorothea")
+regulons <- dorothea_hs %>% dplyr::filter(confidence %in% c("A", "B"))
+tf_regulons <- regulons %>%
+  split(.$tf) %>%
+  lapply(function(x) {
+    mor <- x$mor
+    names(mor) <- x$target
+    list(tfmode = mor, likelihood = rep(1, length(mor)))
+  })
+
+expr_matrix <- as.matrix(GetAssayData(human_seurat, assay = "RNA", layer = "data"))
+expr_matrix <- expr_matrix[is.finite(rowSums(expr_matrix)), ]
+tf_activity_scores <- viper(expr_matrix, tf_regulons, minsize = 4, verbose = FALSE)
+human_seurat[["viper"]] <- CreateAssayObject(data = tf_activity_scores)
+stopifnot(target_tf %in% rownames(human_seurat[["viper"]]))   # SRF regulon must pass minsize
+
+# --- Top 50 variable TFs and export -----------------------------------------------
+cat("Selecting top variable TFs...\n")
+DefaultAssay(human_seurat) <- "viper"
+human_seurat <- ScaleData(human_seurat, verbose = FALSE)
+scaled_viper <- GetAssayData(human_seurat, assay = "viper", layer = "scale.data")
+tf_variance  <- apply(scaled_viper, 1, var)
+top_50_tfs   <- names(sort(tf_variance, decreasing = TRUE))[1:50]
+
+cat("Exporting to Excel...\n")
+tf_top50 <- as.data.frame(t(scaled_viper[top_50_tfs, ]))
+tf_top50$Cell      <- rownames(tf_top50)
+tf_top50$Cell_Type <- as.character(human_seurat$cell_type[rownames(tf_top50)])
+tf_top50 <- tf_top50 %>% dplyr::relocate(Cell, Cell_Type)
+openxlsx::write.xlsx(tf_top50, "./Results/Supplementary_Data-17.xlsx", rowNames = FALSE)
+
+# --- Chicken ortholog of the target TF -------------------------------------------
+cat("Mapping ortholog for:", target_tf, "\n")
+orth <- readr::read_tsv("./External_Data_File/orthologs_ALL_ensembl111.tsv", show_col_types = FALSE)
+hit  <- orth %>% dplyr::filter(human_symbol == target_tf)
+print(as.data.frame(hit))
+
+chicken_ortholog <- unique(hit$chicken_symbol[hit$chicken_symbol %in% rownames(chicken_seurat[["RNA"]])])
+stopifnot(length(chicken_ortholog) == 1)   # exactly one chicken gene, so one line per stage
+
+# --- SRF trajectory data -----------------------------------------------------------
+cat("Extracting trajectory data...\n")
+DefaultAssay(human_seurat) <- "viper"
+human_data <- DotPlot(human_seurat, features = target_tf)$data %>%
+  dplyr::mutate(species = "Human")
+
+DefaultAssay(chicken_seurat) <- "RNA"
+chicken_data <- DotPlot(chicken_seurat, features = chicken_ortholog)$data %>%
+  dplyr::mutate(species = "Chicken")
+
+# --- Plots ---------------------------------------------------------------------------
+make_traj_plot <- function(df, order, color, title, ylab) {
+  df$id <- factor(df$id, levels = order)
+  ggplot(df, aes(x = id, y = avg.exp.scaled, group = 1)) +
+    geom_line(linewidth = 1.2, color = color) +
+    geom_point(size = 4, color = color) +
+    theme_bw(base_size = 14) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          plot.title = element_text(face = "bold", hjust = 0.5)) +
+    labs(title = title, y = ylab, x = NULL)
+}
+
+p_human   <- make_traj_plot(human_data,   custom_order_human,   "#de2d26", "Human",   "Inferred SRF Activity")
+p_chicken <- make_traj_plot(chicken_data, custom_order_chicken, "#3182bd", "Chicken", "SRF mRNA Expression")
+
+ggsave("./Results/S.Fig_5F.pdf", p_human | p_chicken, width = 8, height = 5)
+cat("--- 4E complete: Supplementary_Data-17.xlsx and S.Fig_5F.pdf saved ---\n")
+
+
+# ==============================================================================
+# SCRIPT 4F: CONSERVED AND DIVERGENT STAGE-MATCHED MARKER ANALYSIS
+# ==============================================================================
+#   For each of 9 matched human-chicken maturation stage pairs, identify
+#   (i) markers conserved in both species and (ii) genes that differ directly
+#   between species.
+
+set.seed(42)
+
+# --- Settings ----------------------------------------------------------------
+LOGFC_CUT  <- 0.4    # marker log2FC cutoff, required in BOTH species
+PADJ_CUT   <- 0.05   # adjusted p-value cutoff
+DE_LOGFC   <- 0.5    # log2FC cutoff for direct Human vs Chicken signature
+MIN_PCT    <- 0.1    # minimum fraction of cells expressing the gene (speed-up)
+LOGFC_TEST <- 0.25   # pre-filter passed to FindMarkers
+TOP_N      <- 3      # genes per stage pair shown in the dot plot
+stopifnot(LOGFC_TEST < LOGFC_CUT)   # otherwise the pre-filter would hide valid markers
+
+stage_pairs <- data.frame(
+  pair_id = paste0("S", 1:9),
+  human_stage = c("MEP", "BFU-E", "CFU-E", "Proerythroblast",
+                  "Basophilic Erythroblast", "Polychromatic Erythroblast",
+                  "Orthochromatic Erythroblast", "Reticulocyte", "Mature erythrocyte-H"),
+  chicken_stage = c("Erythroid progenitor 1", "Erythroid progenitor 2", "Early erythroblast",
+                    "Late erythroblast", "Early polychromatic blast", "Mid polychromatic blast",
+                    "Late polychromatic blast", "Immature erythrocyte", "Mature erythrocyte-C"),
+  stringsAsFactors = FALSE
+)
+
+# --- Load atlas ----------------------------------------------------------------
+cat("--- Loading Unified Atlas ---\n")
+integrated_obj <- readRDS("./Processed_Objects/Unified_Atlas.rds")
+DefaultAssay(integrated_obj) <- "RNA"
+integrated_obj <- JoinLayers(integrated_obj)    # Seurat v5
+integrated_obj <- NormalizeData(integrated_obj)
+integrated_obj$stage <- as.character(integrated_obj$stage)
+
+# Every pair stage must exist in the right species
+stopifnot(all(stage_pairs$human_stage   %in% integrated_obj$stage[integrated_obj$species == "Human"]),
+          all(stage_pairs$chicken_stage %in% integrated_obj$stage[integrated_obj$species == "Chicken"]))
+cat("Cells per stage and species:\n")
+print(table(integrated_obj$stage, integrated_obj$species))
+
+# Each species is tested against its own background (stage vs all other stages)
+human_obj   <- subset(integrated_obj, species == "Human")
+chicken_obj <- subset(integrated_obj, species == "Chicken")
+Idents(human_obj)   <- "stage"
+Idents(chicken_obj) <- "stage"
+
+get_markers <- function(obj, stage_name, label) {
+  tryCatch(
+    FindMarkers(obj, ident.1 = stage_name, only.pos = TRUE,
+                logfc.threshold = LOGFC_TEST, min.pct = MIN_PCT, verbose = FALSE),
+    error = function(e) {
+      message("FindMarkers failed for ", label, " / ", stage_name, ": ", conditionMessage(e))
+      NULL
+    })
+}
+
+# --- Conserved markers ---------------------------------------------------------
+cat("--- Conserved markers, stage by stage ---\n")
+conserved_list <- list()
+summary_list   <- list()
+
+for (i in seq_len(nrow(stage_pairs))) {
+  pid <- stage_pairs$pair_id[i]
+  hs  <- stage_pairs$human_stage[i]
+  cs  <- stage_pairs$chicken_stage[i]
+  cat(sprintf("  %s: %s (Human) vs %s (Chicken)\n", pid, hs, cs))
+
+  hm <- get_markers(human_obj,   hs, "Human")
+  cm <- get_markers(chicken_obj, cs, "Chicken")
+  if (is.null(hm) || is.null(cm)) next
+
+  h_genes <- rownames(hm)[hm$avg_log2FC > LOGFC_CUT & hm$p_val_adj < PADJ_CUT]
+  c_genes <- rownames(cm)[cm$avg_log2FC > LOGFC_CUT & cm$p_val_adj < PADJ_CUT]
+  shared  <- intersect(h_genes, c_genes)
+  cat(sprintf("    human %d | chicken %d | conserved %d\n",
+              length(h_genes), length(c_genes), length(shared)))
+
+  summary_list[[pid]] <- data.frame(pair_id = pid, human_stage = hs, chicken_stage = cs,
+                                    human_markers = length(h_genes),
+                                    chicken_markers = length(c_genes),
+                                    conserved = length(shared))
+  if (length(shared) > 0) {
+    conserved_list[[pid]] <- data.frame(
+      gene = shared, pair_id = pid, human_stage = hs, chicken_stage = cs,
+      human_logFC   = hm[shared, "avg_log2FC"], human_p_adj   = hm[shared, "p_val_adj"],
+      chicken_logFC = cm[shared, "avg_log2FC"], chicken_p_adj = cm[shared, "p_val_adj"],
+      row.names = NULL)
+  }
+}
+
+final_conserved_df <- bind_rows(conserved_list)
+pair_summary       <- bind_rows(summary_list)
+cat("Total conserved marker rows:", nrow(final_conserved_df), "\n")
+print(pair_summary)
+
+# --- Direct Human vs Chicken DE ------------------------------------------------
+cat("--- Direct Human vs Chicken DE, stage by stage ---\n")
+direct_de_list <- list()
+
+for (i in seq_len(nrow(stage_pairs))) {
+  pid <- stage_pairs$pair_id[i]
+  hs  <- stage_pairs$human_stage[i]
+  cs  <- stage_pairs$chicken_stage[i]
+
+  keep <- colnames(integrated_obj)[
+    (integrated_obj$species == "Human"   & integrated_obj$stage == hs) |
+    (integrated_obj$species == "Chicken" & integrated_obj$stage == cs)]
+  sub_obj <- subset(integrated_obj, cells = keep)
+  Idents(sub_obj) <- "species"
+  if (length(unique(Idents(sub_obj))) < 2) next
+
+  de_res <- tryCatch(
+    FindMarkers(sub_obj, ident.1 = "Human", ident.2 = "Chicken",
+                logfc.threshold = 0, min.pct = MIN_PCT, verbose = FALSE),
+    error = function(e) { message("Direct DE failed for ", pid, ": ", conditionMessage(e)); NULL })
+  if (is.null(de_res)) next
+
+  de_res$gene          <- rownames(de_res)
+  de_res$pair_id       <- pid
+  de_res$human_stage   <- hs
+  de_res$chicken_stage <- cs
+  de_res <- de_res %>% mutate(Signature = case_when(
+    avg_log2FC >  DE_LOGFC & p_val_adj < PADJ_CUT ~ "Human-Enriched",
+    avg_log2FC < -DE_LOGFC & p_val_adj < PADJ_CUT ~ "Chicken-Enriched",
+    TRUE ~ "Non-Significant/Divergent"))
+  direct_de_list[[pid]] <- de_res
+}
+all_direct_de <- bind_rows(direct_de_list)
+
+write.xlsx(list("Pair_Summary" = pair_summary,
+                "Conserved_Shared_Markers" = final_conserved_df,
+                "Direct_DE_Signatures" = all_direct_de),
+           "./Results/Supplementary Data 10.xlsx")
+
+# --- Dot plot of top conserved markers ------------------------------------------
+if (nrow(final_conserved_df) > 0) {
+  feat <- c()
+  for (pid in stage_pairs$pair_id) {
+    g <- final_conserved_df %>% filter(pair_id == pid) %>%
+      arrange(human_p_adj + chicken_p_adj, desc(human_logFC + chicken_logFC)) %>%
+      head(TOP_N) %>% pull(gene)
+    feat <- c(feat, g)
+  }
+  feat <- unique(feat)   # DotPlot cannot take duplicated features
+  cat("Plotting", length(feat), "genes.\n")
+
+  # One row per stage: pair id + stage name, human then chicken
+  integrated_obj$row_label <- NA_character_
+  row_levels <- c()
+  for (i in seq_len(nrow(stage_pairs))) {
+    hl <- paste0(stage_pairs$pair_id[i], " | ", stage_pairs$human_stage[i], " (Human)")
+    cl <- paste0(stage_pairs$pair_id[i], " | ", stage_pairs$chicken_stage[i], " (Chicken)")
+    integrated_obj$row_label[integrated_obj$species == "Human" &
+                             integrated_obj$stage == stage_pairs$human_stage[i]] <- hl
+    integrated_obj$row_label[integrated_obj$species == "Chicken" &
+                             integrated_obj$stage == stage_pairs$chicken_stage[i]] <- cl
+    row_levels <- c(row_levels, hl, cl)
+  }
+  integrated_obj$row_label <- factor(integrated_obj$row_label, levels = rev(row_levels))
+
+  p_final <- DotPlot(integrated_obj, features = feat, group.by = "row_label",
+                     cols = c("lightblue", "red"), dot.scale = 6) +
+    RotatedAxis() + theme_bw() +
+    labs(title = "Stage-Matched Conserved Markers (Human vs Chicken)",
+         subtitle = paste0("Top ", TOP_N, " per stage pair; log2FC>", LOGFC_CUT,
+                           ", FDR<", PADJ_CUT, " in both species"),
+         x = "Conserved markers (ordered by stage pair)", y = "") +
+    theme(axis.text.x = element_text(size = 9, angle = 60, hjust = 1, face = "italic"),
+          axis.text.y = element_text(size = 10),
+          plot.title = element_text(face = "bold", hjust = 0.5, size = 15),
+          plot.subtitle = element_text(hjust = 0.5, size = 11))
+
+  ggsave("./Results/Fig_3B.pdf", p_final, width = 14, height = 8)
+}
+
+cat("--- 4F complete: Supplementary Data 10 and Fig_3B.pdf saved ---\n")
+
+# ==============================================================================
+# SCRIPT 4G: CONSERVED TRANSCRIPTIONAL KINETICS (SHAPE-MATCHED, PERMUTATION-TESTED)
+# ==============================================================================
+#   Identify genes whose expression trajectory across the 9 matched maturation
+#   stages has the same shape in human and chicken.
+# ==============================================================================
+
+set.seed(2026)
+graphics.off()
+
+# --- Settings ----------------------------------------------------------------
+MIN_EXPR  <- 0.1     # min. peak average expression required in each species
+N_PERM    <- 2000    # permutations for the empirical p-value
+FDR_CUT   <- 0.05
+R_STRICT  <- 0.7     # primary Spearman r cutoff
+R_RELAXED <- 0.5     # fallback if no gene passes R_STRICT
+TOP_N_HM  <- 30      # genes shown in the heatmap
+BLACKLIST <- c("^HB[AB]", "^HBE", "^RPL", "^RPS", "^MT-", "MALAT1")
+
+h_stages <- c("MEP", "BFU-E", "CFU-E", "Proerythroblast", "Basophilic Erythroblast",
+              "Polychromatic Erythroblast", "Orthochromatic Erythroblast",
+              "Reticulocyte", "Mature erythrocyte-H")
+c_stages <- c("Erythroid progenitor 1", "Erythroid progenitor 2", "Early erythroblast",
+              "Late erythroblast", "Early polychromatic blast", "Mid polychromatic blast",
+              "Late polychromatic blast", "Immature erythrocyte", "Mature erythrocyte-C")
+
+# --- Average expression per species x stage ------------------------------------
+cat("--- Loading Unified Atlas ---\n")
+integrated_obj <- readRDS("./Processed_Objects/Unified_Atlas.rds")
+assay_names <- names(integrated_obj@assays)   # works in every Seurat version
+print(assay_names)
+stopifnot("SCT" %in% assay_names)
+DefaultAssay(integrated_obj) <- "SCT"
+integrated_obj$stage_species <- paste0(integrated_obj$species, "_", integrated_obj$stage)
+
+avg_exp <- as.matrix(AverageExpression(integrated_obj, group.by = "stage_species",
+                                       assays = "SCT")$SCT)
+
+# AverageExpression may rewrite column names (e.g. "_" -> "-"), so match on
+# names with all non-alphanumeric characters removed
+normalize_name <- function(x) gsub("[^A-Za-z0-9]", "", x)
+match_cols <- function(expected) {
+  hit <- match(normalize_name(expected), normalize_name(colnames(avg_exp)))
+  if (anyNA(hit)) stop("Could not match stage columns: ", paste(expected[is.na(hit)], collapse = ", "))
+  colnames(avg_exp)[hit]
+}
+h_cols <- match_cols(paste0("Human_",   h_stages))
+c_cols <- match_cols(paste0("Chicken_", c_stages))
+
+# --- Gene filtering ------------------------------------------------------------
+genes <- rownames(avg_exp)
+genes <- genes[!grepl(paste(BLACKLIST, collapse = "|"), genes)]
+h_max <- apply(avg_exp[genes, h_cols, drop = FALSE], 1, max)
+c_max <- apply(avg_exp[genes, c_cols, drop = FALSE], 1, max)
+genes <- genes[h_max > MIN_EXPR & c_max > MIN_EXPR]
+
+h_mat <- avg_exp[genes, h_cols, drop = FALSE]
+c_mat <- avg_exp[genes, c_cols, drop = FALSE]
+keep  <- apply(h_mat, 1, sd) > 0 & apply(c_mat, 1, sd) > 0
+h_mat <- h_mat[keep, , drop = FALSE]
+c_mat <- c_mat[keep, , drop = FALSE]
+cat("Genes tested (detected, non-constant in both species):", nrow(h_mat), "\n")
+if (nrow(h_mat) == 0) stop("No genes passed the filters.")
+
+# --- Spearman r and permutation test -------------------------------------------
+rank_and_scale <- function(mat) t(scale(t(t(apply(mat, 1, rank)))))
+h_scaled <- rank_and_scale(h_mat)
+c_scaled <- rank_and_scale(c_mat)
+n_stages <- ncol(h_scaled)
+
+# Pearson correlation of the rank-scaled values = Spearman correlation
+row_cor <- function(A, B) rowMeans(A * B) * (n_stages / (n_stages - 1))
+obs_cor <- row_cor(h_scaled, c_scaled)
+
+perm_cor <- matrix(NA_real_, nrow = nrow(c_scaled), ncol = N_PERM)
+for (k in seq_len(N_PERM)) {
+  perm_cor[, k] <- row_cor(h_scaled, c_scaled[, sample(n_stages), drop = FALSE])
+}
+emp_p <- (rowSums(abs(perm_cor) >= abs(obs_cor)) + 1) / (N_PERM + 1)
+
+results_df <- data.frame(gene = rownames(h_scaled), spearman_r = obs_cor,
+                         p_value = emp_p, p_adj_fdr = p.adjust(emp_p, method = "fdr")) %>%
+  arrange(desc(spearman_r))
+write.xlsx(results_df, "./Results/Supplementary Data 11.xlsx")
+
+# --- Select genes (significant and positively correlated) ------------------------
+r_used <- R_STRICT
+sig_genes <- results_df %>% filter(p_adj_fdr < FDR_CUT, spearman_r > r_used) %>% pull(gene)
+if (length(sig_genes) == 0) {
+  r_used <- R_RELAXED
+  cat("No gene passed r >", R_STRICT, "- relaxing to r >", R_RELAXED, "\n")
+  sig_genes <- results_df %>% filter(p_adj_fdr < FDR_CUT, spearman_r > r_used) %>% pull(gene)
+}
+if (length(sig_genes) == 0) stop("No genes passed even the relaxed threshold.")
+cat("Genes tested:", nrow(results_df), "| passing FDR <", FDR_CUT, "and r >", r_used, ":", length(sig_genes), "\n")
+
+top_genes <- sig_genes[seq_len(min(TOP_N_HM, length(sig_genes)))]   # ordered by r
+
+# --- Heatmap (each species z-scored separately) -----------------------------------
+z_score <- function(x) t(apply(x, 1, function(r) if (sd(r) == 0) rep(0, length(r)) else (r - mean(r)) / sd(r)))
+raw_mat <- avg_exp[top_genes, c(h_cols, c_cols), drop = FALSE]
+final_matrix <- cbind(z_score(raw_mat[, h_cols, drop = FALSE]),
+                      z_score(raw_mat[, c_cols, drop = FALSE]))
+colnames(final_matrix) <- c(h_stages, c_stages)
+
+row_annot <- data.frame(Spearman_r = results_df$spearman_r[match(top_genes, results_df$gene)],
+                        row.names = top_genes)
+stopifnot(identical(rownames(row_annot), rownames(final_matrix)))
+
+pdf("./Results/S.Fig_6A.pdf", width = 14, height = 9)
+pheatmap(
+  final_matrix,
+  cluster_cols = FALSE, cluster_rows = FALSE,
+  main = paste0("Conserved Transcriptional Kinetics (Shape Only): Human vs Chicken\n",
+                "FDR<", FDR_CUT, ", Spearman r>", r_used, ", n=", length(top_genes),
+                " genes (", nrow(results_df), " tested)\n",
+                "Each species independently z-scored - not comparable for magnitude of change"),
+  color = colorRampPalette(c("#4575b4", "#ffffbf", "#d73027"))(100),
+  border_color = "white",
+  cellwidth = 20, cellheight = 15,
+  fontsize = 10, fontsize_row = 10, fontsize_col = 10,
+  annotation_row = row_annot,
+  gaps_col = length(h_cols)
+)
+dev.off()
+
+cat("--- 4G complete: Supplementary Data 11 and S.Fig_6A.pdf saved ---\n")
+
+# ==============================================================================
+# SCRIPT 4H: MATURATION VOLATILITY ANALYSIS (STAGE-MATCHED)
+# ==============================================================================
+#   Compare how strongly gene expression changes between consecutive matched
+#   maturation stages in human and chicken.
+#
+cat("--- Running Maturation Intensity (Volatility) Analysis ---\n")
+
+integrated_obj <- readRDS("./Processed_Objects/Unified_Atlas.rds")
+DefaultAssay(integrated_obj) <- "RNA"
+integrated_obj <- JoinLayers(integrated_obj)    # Seurat v5
+integrated_obj <- NormalizeData(integrated_obj)
+integrated_obj$stage <- as.character(integrated_obj$stage)
+
+stage_pairs <- data.frame(
+  pair_id = paste0("S", 1:9),
+  human_stage = c("MEP", "BFU-E", "CFU-E", "Proerythroblast",
+                  "Basophilic Erythroblast", "Polychromatic Erythroblast",
+                  "Orthochromatic Erythroblast", "Reticulocyte", "Mature erythrocyte-H"),
+  chicken_stage = c("Erythroid progenitor 1", "Erythroid progenitor 2", "Early erythroblast",
+                    "Late erythroblast", "Early polychromatic blast", "Mid polychromatic blast",
+                    "Late polychromatic blast", "Immature erythrocyte", "Mature erythrocyte-C"),
+  stringsAsFactors = FALSE
+)
+h_path <- stage_pairs$human_stage
+c_path <- stage_pairs$chicken_stage
+ids    <- stage_pairs$pair_id
+
+stopifnot(all(h_path %in% integrated_obj$stage[integrated_obj$species == "Human"]),
+          all(c_path %in% integrated_obj$stage[integrated_obj$species == "Chicken"]))
+
+# Differential expression between each stage and the next one, within one species
+calc_vol <- function(obj, species_name, stages, ids) {
+  res <- lapply(seq_len(length(stages) - 1), function(i) {
+    m <- FindMarkers(obj, ident.1 = stages[i + 1], ident.2 = stages[i],
+                     group.by = "stage", logfc.threshold = 0, min.pct = 0.05,
+                     verbose = FALSE)
+    m$gene       <- rownames(m)
+    m$species    <- species_name
+    m$from_stage <- stages[i]
+    m$to_stage   <- stages[i + 1]
+    m$transition <- paste0(ids[i], " \u2192 ", ids[i + 1])
+    m
+  })
+  bind_rows(res)
+}
+
+vol_combined <- bind_rows(
+  calc_vol(subset(integrated_obj, species == "Human"),   "Human",   h_path, ids),
+  calc_vol(subset(integrated_obj, species == "Chicken"), "Chicken", c_path, ids))
+
+# S1 -> S2 at the top of the plot
+trans_levels <- paste0(ids[-length(ids)], " \u2192 ", ids[-1])
+vol_combined$transition <- factor(vol_combined$transition, levels = rev(trans_levels))
+
+# --- Ridge plot ----------------------------------------------------------------
+cat("--- Generating ridge plot ---\n")
+p_ridges <- ggplot(vol_combined, aes(x = abs(avg_log2FC), y = transition, fill = species)) +
+  geom_density_ridges(alpha = 0.7, color = "white", scale = 1.4) +
+  scale_fill_manual(values = c("Human" = "#1b9e77", "Chicken" = "#d95f02")) +
+  theme_ridges(font_size = 12) + xlim(0, 4) +
+  labs(title = "Stage-Matched Maturation Volatility",
+       subtitle = "Distribution of |log2FC| between consecutive matched stages",
+       x = "Magnitude of Change (|Log2FC|)", y = "Matched stage transition")
+
+ggsave("./Results/Fig_3D.pdf", p_ridges, width = 8, height = 7)
+
+# Summary statistics ----------------------------------------------------------
+vol_stats_detailed <- vol_combined %>%
+  as.data.frame() %>%
+  dplyr::group_by(species, transition) %>%
+  dplyr::summarize(
+    Total_Genes      = dplyr::n(),
+    Mean_Abs_LogFC   = mean(abs(avg_log2FC), na.rm = TRUE),
+    Median_Abs_LogFC = median(abs(avg_log2FC), na.rm = TRUE),
+    Std_Dev          = sd(abs(avg_log2FC), na.rm = TRUE),
+    Extreme_Count    = sum(abs(avg_log2FC) > 2),
+    Percent_Extreme  = Extreme_Count / Total_Genes * 100,
+    .groups = "drop"
+  )
+
+write.csv(vol_stats_detailed, "./Results/Supplementary Data 12.csv", row.names = FALSE)
+cat("--- 4H complete: Fig_3D.pdf and Supplementary Data 12 saved ---\n")
+
+
+# ==============================================================================
+# SCRIPT 4I: MATCHED ANALYSIS OF STAGE TRANSITIONS ON THE UNIFIED ATLAS
+# ==============================================================================
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(openxlsx)
+  library(clusterProfiler)
+  library(org.Hs.eg.db)
+})
+# plyr (loaded earlier in your session) masks dplyr verbs; summarise() in particular
+# silently drops the grouping. Pin the dplyr versions explicitly.
+select <- dplyr::select; filter <- dplyr::filter; mutate <- dplyr::mutate
+summarise <- dplyr::summarise; summarize <- dplyr::summarise; arrange <- dplyr::arrange
+rename <- dplyr::rename; count <- dplyr::count; group_by <- dplyr::group_by
+set.seed(42)
+
+# Settings --------------------------------------------------------------
+N_CELLS   <- 300      # max cells per stage per species (same for both species)
+N_REPEATS <- 5        # number of random downsampling repeats
+PADJ      <- 0.05
+LFC       <- 0.5      # |log2FC| for a DEG (same as SCRIPT 4P)
+MIN_PCT   <- 0.1
+OUT <- "./Results/"
+dir.create(OUT, recursive = TRUE, showWarnings = FALSE)
+
+stage_pairs <- data.frame(
+  pair_id = paste0("S", 1:9),
+  human_stage = c("MEP", "BFU-E", "CFU-E", "Proerythroblast",
+                  "Basophilic Erythroblast", "Polychromatic Erythroblast",
+                  "Orthochromatic Erythroblast", "Reticulocyte", "Mature erythrocyte-H"),
+  chicken_stage = c("Erythroid progenitor 1", "Erythroid progenitor 2", "Early erythroblast",
+                    "Late erythroblast", "Early polychromatic blast", "Mid polychromatic blast",
+                    "Late polychromatic blast", "Immature erythrocyte", "Mature erythrocyte-C"),
+  stringsAsFactors = FALSE
+)
+
+# Load the unified atlas (RNA assay, same as 4F / 4H) ---------------------
+atlas <- readRDS("./Processed_Objects/Unified_Atlas.rds")
+DefaultAssay(atlas) <- "RNA"
+atlas <- JoinLayers(atlas)
+atlas <- NormalizeData(atlas)
+atlas$stage <- as.character(atlas$stage)
+
+# The warning "Different cells in new layer data than already exists" can mean a stale
+# 'data' layer. Make sure the normalised layer covers ALL cells before testing.
+dl <- LayerData(atlas, assay = "RNA", layer = "data")
+cat("CHECK: data layer dims:", dim(dl), "| atlas cells:", ncol(atlas), "\n")
+stopifnot(ncol(dl) == ncol(atlas), setequal(colnames(dl), colnames(atlas)))
+rm(dl)
+
+stopifnot(all(stage_pairs$human_stage   %in% atlas$stage[atlas$species == "Human"]),
+          all(stage_pairs$chicken_stage %in% atlas$stage[atlas$species == "Chicken"]))
+
+meta <- atlas@meta.data
+meta$cell <- rownames(meta)
+cat("CHECK: cells per stage and species\n")
+print(table(meta$stage, meta$species))
+
+# Helpers ---------------------------------------------------------------
+# FindMarkers.Seurat() has no cells.1/cells.2 arguments, so two cell sets are passed
+# through a temporary grouping column.
+find_markers_cells <- function(c1, c2) {
+  grp <- rep("other", ncol(atlas)); names(grp) <- colnames(atlas)
+  grp[c1] <- "g1"; grp[c2] <- "g2"
+  atlas$tmp_grp <- grp
+  FindMarkers(atlas, ident.1 = "g1", ident.2 = "g2", group.by = "tmp_grp", assay = "RNA",
+              test.use = "wilcox", logfc.threshold = 0, min.pct = MIN_PCT, verbose = FALSE)
+}
+
+# One transition, optionally on matched/downsampled cells
+run_transition <- function(species, from, to, pair_from, pair_to, n_cap,
+                           pool = NULL, seed = 1, keep_table = FALSE) {
+  m <- meta[meta$species == species, ]
+  if (!is.null(pool)) m <- m[m$cell %in% pool, ]
+  c1_all <- m$cell[m$stage == to]
+  c2_all <- m$cell[m$stage == from]
+  n_use  <- min(n_cap, length(c1_all), length(c2_all))
+  if (n_use < 3) return(NULL)
+  set.seed(seed)
+  c1 <- sample(c1_all, n_use); c2 <- sample(c2_all, n_use)
+
+  # logfc.threshold = 0 -> every gene passing min.pct is tested, so the same table
+  # gives (a) significant DEGs and (b) the |log2FC|>2 fraction (Fig. 3c metric)
+  res <- find_markers_cells(c1, c2)
+  res$gene <- rownames(res)
+  sig  <- res$p_val_adj < PADJ & abs(res$avg_log2FC) > LFC
+  summ <- data.frame(
+    species = species, transition = paste0(pair_from, "->", pair_to),
+    from = from, to = to, n_cells_per_group = n_use, seed = seed,
+    genes_tested = nrow(res),
+    up = sum(sig & res$avg_log2FC > 0), down = sum(sig & res$avg_log2FC < 0),
+    total_DEGs = sum(sig),
+    pct_abs_lfc_gt2 = 100 * mean(abs(res$avg_log2FC) > 2),
+    pct_abs_lfc_gt1 = 100 * mean(abs(res$avg_log2FC) > 1),
+    stringsAsFactors = FALSE)
+  if (keep_table) list(summary = summ, table = res) else list(summary = summ)
+}
+
+# Main analysis: all 8 consecutive transitions, both species ---------------
+# Cell cap per transition is the same for both species (min over the 4 groups),
+# so DE power is matched.
+cap_for <- function(i) {
+  g <- function(sp, st) sum(meta$species == sp & meta$stage == st)
+  min(N_CELLS,
+      g("Human", stage_pairs$human_stage[i]),   g("Human", stage_pairs$human_stage[i + 1]),
+      g("Chicken", stage_pairs$chicken_stage[i]), g("Chicken", stage_pairs$chicken_stage[i + 1]))
+}
+
+all_summ <- list(); kept_tables <- list()
+for (i in 1:8) {
+  cap <- cap_for(i)
+  cat(sprintf("Transition S%d->S%d | cells per group (matched across species): %d\n", i, i + 1, cap))
+  for (r in seq_len(N_REPEATS)) {
+    for (sp in c("Human", "Chicken")) {
+      from <- if (sp == "Human") stage_pairs$human_stage[i]   else stage_pairs$chicken_stage[i]
+      to   <- if (sp == "Human") stage_pairs$human_stage[i+1] else stage_pairs$chicken_stage[i+1]
+      out  <- run_transition(sp, from, to, stage_pairs$pair_id[i], stage_pairs$pair_id[i + 1],
+                             n_cap = cap, seed = r, keep_table = (r == 1))
+      if (is.null(out)) next
+      all_summ[[length(all_summ) + 1]] <- out$summary
+      if (r == 1) kept_tables[[paste(sp, out$summary$transition)]] <- out$table
+    }
+  }
+}
+deg_summary <- bind_rows(all_summ)
+
+deg_median <- deg_summary %>%
+  dplyr::group_by(species, transition) %>%
+  dplyr::summarise(n_cells_per_group = dplyr::first(n_cells_per_group), genes_tested = round(median(genes_tested)),
+            up_median = median(up), down_median = median(down),
+            total_median = median(total_DEGs), total_min = min(total_DEGs), total_max = max(total_DEGs),
+            pct_lfc_gt2_median = median(pct_abs_lfc_gt2), .groups = "drop")
+cat("\n=== MATCHED DEG COUNTS (median over repeats) ===\n")
+print(as.data.frame(deg_median))
+
+# Plot: DEG counts per transition, both species ----------------------------
+plot_df <- deg_median %>% mutate(transition = factor(transition, levels = paste0("S", 1:8, "->S", 2:9)))
+p <- ggplot(plot_df, aes(transition, total_median, fill = species)) +
+  geom_col(position = position_dodge(0.8), width = 0.75) +
+  geom_errorbar(aes(ymin = total_min, ymax = total_max), position = position_dodge(0.8), width = 0.25) +
+  scale_fill_manual(values = c(Human = "#1b9e77", Chicken = "#d95f02")) +
+  labs(x = "Matched stage transition (chicken S9 = peripheral-blood-derived cluster)",
+       y = paste0("DEGs (padj<", PADJ, ", |log2FC|>", LFC, "), matched cells"),
+       title = "Stage-matched DEG counts on the unified atlas",
+       subtitle = paste0("Equal cells per group per transition (cap ", N_CELLS,
+                         "); bars = median, whiskers = range over ", N_REPEATS, " repeats")) +
+  theme_classic()
+ggsave(file.path(OUT, "Matched_DEG_counts.pdf"), p, width = 9, height = 5)
+
+p2 <- ggplot(plot_df, aes(transition, pct_lfc_gt2_median, fill = species)) +
+  geom_col(position = position_dodge(0.8), width = 0.75) +
+  scale_fill_manual(values = c(Human = "#1b9e77", Chicken = "#d95f02")) +
+  labs(x = "Matched stage transition", y = "% tested genes with |log2FC| > 2",
+       title = "Volatility metric (Fig. 3c style) with matched cells") + theme_classic()
+ggsave(file.path(OUT, "Matched_volatility_pct_gt2.pdf"), p2, width = 9, height = 5)
+
+# Enrichment: same universe logic for both species -------------------------
+# Both species are already in human gene symbols, so org.Hs.eg.db is used for both.
+# Universe = genes tested in that comparison (not the whole genome).
+run_go <- function(genes, universe, label) {
+  if (length(genes) < 10) return(NULL)
+  e <- tryCatch(enrichGO(gene = genes, universe = universe, OrgDb = org.Hs.eg.db, keyType = "SYMBOL",
+                         ont = "BP", pAdjustMethod = "BH", pvalueCutoff = 0.05, qvalueCutoff = 0.05,
+                         minGSSize = 10, maxGSSize = 500), error = function(e) NULL)
+  if (is.null(e) || nrow(as.data.frame(e)) == 0) return(NULL)
+  mutate(as.data.frame(e), Cluster = label)
+}
+
+go_all <- list()
+for (nm in names(kept_tables)) {
+  tb   <- kept_tables[[nm]]
+  univ <- tb$gene
+  up   <- tb$gene[tb$p_val_adj < PADJ & tb$avg_log2FC >  LFC]
+  down <- tb$gene[tb$p_val_adj < PADJ & tb$avg_log2FC < -LFC]
+  go_all[[paste(nm, "up")]]   <- run_go(up,   univ, paste(nm, "up"))
+  go_all[[paste(nm, "down")]] <- run_go(down, univ, paste(nm, "down"))
+}
+go_df <- bind_rows(go_all)
+
+key_terms <- "autophag|mitophag|translation|ribosom|oxidative phosph|respirat|electron transport|cell cycle|DNA replication|oxygen transport|gas transport|mitochond"
+go_key <- go_df %>%
+  filter(grepl(key_terms, Description, ignore.case = TRUE)) %>%
+  select(Cluster, Description, GeneRatio, BgRatio, FoldEnrichment, p.adjust, Count) %>%
+  arrange(Cluster, p.adjust)
+
+# Focus view: the two terminal transitions in both species
+focus <- go_key %>% filter(grepl("S7->S8|S8->S9", Cluster))
+cat("\n=== KEY TERMS at S7->S8 and S8->S9 (matched analysis) ===\n")
+print(as.data.frame(head(focus, 60)))
+
+# Save everything -----------------------------------------------------------
+wb <- createWorkbook()
+add <- function(name, d) { addWorksheet(wb, name); writeData(wb, name, as.data.frame(d)) }
+add("DEG_counts_all_repeats", deg_summary)
+add("DEG_counts_median", deg_median)
+if (nrow(go_df))  add("GO_BP_all", go_df)
+if (nrow(go_key)) add("GO_key_terms", go_key)
+saveWorkbook(wb, file.path(OUT, "Supplementary Data 14.xlsx"), overwrite = TRUE)
+
+# Full DEG tables (repeat 1) for each transition
+wb2 <- createWorkbook()
+for (nm in names(kept_tables)) {
+  sh <- substr(gsub("[^A-Za-z0-9>_ -]", "", gsub("->", "_", nm)), 1, 31)
+  addWorksheet(wb2, sh); writeData(wb2, sh, kept_tables[[nm]])
+}
+saveWorkbook(wb2, file.path(OUT, "Supplementary Data 15.xlsx"), overwrite = TRUE)
+saveRDS(list(summary = deg_summary, median = deg_median, go = go_df),
+        file.path(OUT, "Matched_Reanalysis.rds"))
+cat("\n--- 4T complete. Results in:", OUT, "---\n")
+
+# ==============================================================================
+# SCRIPT 4J: MECHANISTIC MARKER DOT PLOTS (HUMAN VS CHICKEN)
+# ==============================================================================
+#   Compare expression of enucleation-related markers (signal, cytoskeletal
+#   motor, nuclear stiffness, apoptosis trigger, autophagy clearance) across
+#   erythroid maturation in human (enucleating) and chicken (non-enucleating).
+cat("--- Loading human and chicken objects ---\n")
+human   <- readRDS("./Processed_Objects/HscRNA.rds")
+chicken <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+
+# Cluster -> stage names
+human_names <- c("5" = "MEP", "1" = "BFU-E", "2" = "CFU-E", "8" = "Proerythroblast",
+                 "6" = "Basophilic Erythroblast", "0" = "Polychromatic Erythroblast",
+                 "4" = "Orthochromatic Erythroblast", "9" = "Reticulocyte",
+                 "10" = "Mature erythrocyte-H")
+
+chicken_names <- c("5" = "Erythroid progenitor 1", "3" = "Erythroid progenitor 2",
+                   "8" = "Early erythroblast", "2" = "Late erythroblast",
+                   "4" = "Early polychromatic blast", "1" = "Mid polychromatic blast",
+                   "0" = "Late polychromatic blast", "6" = "Immature erythrocyte",
+                   "9" = "Mature erythrocyte-C")
+
+# Stage order (first level plots at the BOTTOM of the dot plot)
+human_order <- c("MEP", "BFU-E", "CFU-E", "Proerythroblast", "Basophilic Erythroblast",
+                 "Polychromatic Erythroblast", "Orthochromatic Erythroblast",
+                 "Reticulocyte", "Mature erythrocyte-H")
+
+chicken_order <- c("Erythroid progenitor 1", "Erythroid progenitor 2", "Early erythroblast",
+                   "Early polychromatic blast", "Mid polychromatic blast",
+                   "Late polychromatic blast", "Late erythroblast",
+                   "Immature erythrocyte", "Mature erythrocyte-C")
+
+# Assign stages, keep erythroid clusters, set RNA assay
+prep_obj <- function(x, name_map, stage_levels) {
+  st <- unname(name_map[as.character(x$seurat_clusters)])   # NA for clusters not in the map
+  x$stage <- st
+  x <- subset(x, cells = colnames(x)[!is.na(x$stage)])
+  x$stage <- factor(x$stage, levels = stage_levels)
+  stopifnot(!any(is.na(x$stage)))
+
+  DefaultAssay(x) <- "RNA"
+  x <- tryCatch(JoinLayers(x), error = function(e) x)       # Seurat v5 split layers
+  if (!("data" %in% Layers(x[["RNA"]]))) x <- NormalizeData(x)
+  x
+}
+
+human_obj   <- prep_obj(human,   human_names,   human_order)
+chicken_obj <- prep_obj(chicken, chicken_names, chicken_order)
+
+cat("Human cells per stage:\n");   print(table(human_obj$stage))
+cat("Chicken cells per stage:\n"); print(table(chicken_obj$stage))
+
+# Marker set, ordered by biological pipeline
+gene_sets <- list(
+  "The_Signal"    = c("TGFB1", "RHOA"),
+  "The_Lock"      = c("VIM"),
+  "The_Motor"     = c("TMOD1", "MYH10", "DIAPH3"),
+  "The_Stiffness" = c("LMNB1", "LMNA"),
+  "The_Trigger"   = c("CASP3", "ROCK1", "BCL2"),
+  "The_Clearance" = c("MAP1LC3B")
+)
+genes_all <- unlist(gene_sets, use.names = FALSE)
+
+in_h <- genes_all %in% rownames(human_obj)
+in_c <- genes_all %in% rownames(chicken_obj)
+cat("Missing in human:  ", genes_all[!in_h], "\n")
+cat("Missing in chicken:", genes_all[!in_c], "\n")
+
+genes_to_plot <- genes_all[in_h & in_c]   # same x-axis in both panels
+cat("Plotting", length(genes_to_plot), "genes:", genes_to_plot, "\n")
+
+# Dot plots
+cat("--- Generating dot plots ---\n")
+make_dot <- function(obj, title) {
+  DotPlot(obj, features = genes_to_plot, group.by = "stage",
+          cols = c("darkgrey", "darkred"), dot.scale = 5) +
+    theme_bw() +
+    labs(title = title, x = "Mechanistic Markers", y = "") +
+    theme(axis.title.y = element_blank(),
+          axis.text.x = element_text(angle = 45, hjust = 1))
+}
+
+p_human   <- make_dot(human_obj,   "Human (Enucleating)")
+p_chicken <- make_dot(chicken_obj, "Chicken (Non-enucleating)")
+
+combined_plot <- p_human + p_chicken +
+  plot_annotation(
+    title = "Comparative Transcriptomic Landscape",
+    theme = theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 16))
+  )
+
+ggsave("./Results/Fig_3C.pdf", combined_plot, width = 14, height = 4)
+cat("--- 4I complete: Fig_3C.pdf saved ---\n")
+
+# ==============================================================================
+# SCRIPT 4K: HUMAN ERYTHROID TRAJECTORY & PSEUDOTIME (MONOCLE 3)
+# ==============================================================================
+
+# Dataset Preparation for Monocle 3
+# We reconstruct the human erythroid maturation trajectory to 
+# serve as the mammalian benchmark for enucleation-associated gene dynamics.
+
+# Load the processed human erythroid object
+HscRNA <- readRDS("./Processed_Objects/HscRNA.rds")
+Idents(HscRNA) <- "seurat_clusters"
+selected_clusters <- c(5, 1, 2, 8, 6, 0, 4, 9, 10)
+HscRNA <- subset(HscRNA, idents = selected_clusters)
+# Define maturation labels and explicit factor ordering
+new_cluster_names <- c(
+  "0" = "Polychromatic Erythroblast", "1" = "BFU-E", "2" = "CFU-E",
+  "4" = "Orthochromatic Erythroblast", "5" = "MEP", "6" = "Basophilic Erythroblast",
+  "8" = "Proerythroblast", "9" = "Reticulocyte", "10"= "Mature erythrocyte"
+)
+human_cluster_order <- c(
+  "MEP", "BFU-E", "CFU-E", "Proerythroblast",
+  "Basophilic Erythroblast", "Polychromatic Erythroblast",
+  "Orthochromatic Erythroblast", "Reticulocyte", "Mature erythrocyte"
+)
+HscRNA$annotated_clusters <- plyr::revalue(as.character(HscRNA$seurat_clusters), new_cluster_names)
+HscRNA$annotated_clusters <- factor(HscRNA$annotated_clusters, levels = human_cluster_order)
+
+# Monocle 3 Object Construction & Graph Learning
+# We transfer the UMAP coordinates from Seurat to ensure trajectory alignment.
+expr_matrix <- as(as.matrix(HscRNA@assays$RNA@counts), 'sparseMatrix')
+cell_metadata <- HscRNA@meta.data
+gene_metadata <- data.frame(gene_short_name = rownames(expr_matrix), row.names = rownames(expr_matrix))
+# Create Monocle3 object
+cds <- new_cell_data_set(expr_matrix, cell_metadata, gene_metadata)
+cds <- preprocess_cds(cds, method = "PCA")
+umap_coords <- Embeddings(HscRNA, reduction = "umap")
+reducedDims(cds)$UMAP <- umap_coords
+cds <- cluster_cells(cds, reduction_method = "UMAP")
+# FORCE SINGLE PARTITION: Ensures the trajectory graph is built across all maturation stages
+partition_vector <- factor(rep(1, ncol(cds)))
+names(partition_vector) <- colnames(cds) 
+colData(cds)$partition <- partition_vector 
+cds@clusters$UMAP$partitions <- partition_vector 
+cds@clusters$UMAP$cluster_graph <- igraph::make_empty_graph(directed = TRUE) 
+# Learn trajectory graph
+cds <- learn_graph(
+  cds, 
+  use_partition = FALSE, 
+  learn_graph_control = list(euclidean_distance_ratio = 3.0) 
+) 
+#  Pseudotime Root Setting & Calculation
+# We identify the earliest principal node within the MEP cluster to root the trajectory.
+get_earliest_principal_node <- function(cds, cell_cluster) {
+  cell_ids <- which(colData(cds)[['annotated_clusters']] == cell_cluster)
+  closest_vertex <- cds@principal_graph_aux[['UMAP']]$pr_graph_cell_proj_closest_vertex
+  closest_vertex <- as.matrix(closest_vertex[colnames(cds),])
+  root_pr_nodes <- igraph::V(principal_graph(cds)[['UMAP']])$name[
+    as.numeric(names(which.max(table(closest_vertex[cell_ids,]))))
+  ]
+  return(root_pr_nodes[1])
+}
+# Find and set root node
+root_node <- get_earliest_principal_node(cds, "MEP")
+cds <- order_cells(cds, reduction_method = "UMAP", root_pr_nodes = root_node)
+
+#  Manual Pseudotime Assignment (Safety Net)
+# Mature erythrocytes often exhibit low transcript diversity 
+# which can skew automated pseudotime. We manually assign them as the terminal state.
+pseudotime_data <- cds@colData %>%
+  as.data.frame() %>%
+  filter(annotated_clusters %in% c("Reticulocyte", "Orthochromatic Erythroblast"))
+max_pseudotime <- max(pseudotime_data$pseudotime, na.rm = TRUE)
+if (is.infinite(max_pseudotime) || is.na(max_pseudotime)) {
+    max_pseudotime <- max(cds@colData$pseudotime, na.rm=TRUE) 
+}
+if (is.infinite(max_pseudotime) || is.na(max_pseudotime)) {
+    max_pseudotime <- 10 
+}
+start_time_for_mature <- max_pseudotime + 1 
+mature_erythrocyte_cells <- rownames(cds@colData[cds@colData$annotated_clusters == "Mature erythrocyte", ])
+if (length(mature_erythrocyte_cells) > 0) {
+    message(paste("Manually assigning pseudotime (value:", round(start_time_for_mature, 2), ") to", length(mature_erythrocyte_cells), "Mature Erythrocyte cells."))
+    cds@colData[mature_erythrocyte_cells, "pseudotime"] <- start_time_for_mature
+}
+
+#  Trajectory Visualization
+pdf("./Results/Result_Supporting_Files/Trajactory.pdf", width = 10, height = 8)
+plot_cells(cds,
+           reduction_method = "UMAP",
+           color_cells_by = "annotated_clusters",
+           label_groups_by_cluster = FALSE,
+           label_cell_groups = FALSE,
+           label_leaves = FALSE,
+           label_branch_points = FALSE,
+           group_label_size = 5) +
+  geom_text(
+    data = cds@colData %>%
+      as.data.frame() %>%
+      dplyr::group_by(annotated_clusters) %>%
+      dplyr::summarize(UMAP_1 = median(reducedDims(cds)$UMAP[annotated_clusters == unique(annotated_clusters), 1], na.rm=TRUE),
+                       UMAP_2 = median(reducedDims(cds)$UMAP[annotated_clusters == unique(annotated_clusters), 2], na.rm=TRUE)),
+    aes(x = UMAP_1, y = UMAP_2, label = annotated_clusters),
+    size = 4, color = "black", fontface = "bold"
+  )
+dev.off()
+
+#  Maturation Marker Dynamics
+# We plot key lineage markers across pseudotime using individual scales to capture the loss of progenitor markers and gain of terminal signatures.
+AFD_genes_human <- c("CD38", "CD34", "THY1", "IL3RA", "PTPRC", "CD36", "TFRC", "ENG", "KIT", "GYPA", "ITGA4", "GYPB")
+AFD_genes_human_present <- AFD_genes_human[AFD_genes_human %in% rownames(cds)]
+missing_genes <- setdiff(AFD_genes_human, AFD_genes_human_present)
+if (length(missing_genes) > 0) {
+  message("These genes are not found in your dataset: ", paste(missing_genes, collapse=", "))
+}
+# Define gene-specific y-axis scales for high-resolution visualization
+gene_scales <- list(
+  "THY1" = list(breaks = c(1, 3, 10)),
+  "TFRC" = list(breaks = c(1, 3, 10, 30)),
+  "PTPRC" = list(breaks = c(1, 3, 10, 30)),
+  "KIT" = list(breaks = c(1, 3, 10)),
+  "ITGA4" = list(breaks = c(1, 3, 10, 30)),
+  "IL3RA" = list(breaks = c(1, 3, 10, 30)),
+  "GYPB" = list(breaks = c(1, 3, 10)),
+  "GYPA" = list(breaks = c(1, 10, 100)), 
+  "ENG" = list(breaks = c(1, 3, 10, 30)),
+  "CD38" = list(breaks = c(1, 3, 10)),
+  "CD36" = list(breaks = c(1, 3, 10, 30)),
+  "CD34" = list(breaks = c(1, 3, 10, 30))
+)
+
+default_scale <- list(breaks = c(1, 10, 100), limits = c(0.8, 100))
+plots_list <- lapply(AFD_genes_human_present, function(gene) {
+  gene_scale <- gene_scales[[gene]]
+  if (is.null(gene_scale)) {
+    gene_scale <- default_scale
+    message(paste("Warning: No custom scale found for", gene, ". Using default scale."))
+  } else {
+      gene_scale$limits <- c(0.8, max(gene_scale$breaks))
+  }
+  
+  p <- plot_genes_in_pseudotime(cds[gene,], color_cells_by = "annotated_clusters") + 
+    scale_y_continuous(
+        trans = "log10", 
+        breaks = gene_scale$breaks, 
+        limits = gene_scale$limits,
+        labels = function(x) ifelse(x < 1, format(x, scientific = FALSE), as.character(x))
+    ) +
+    theme(legend.position = "right") +
+    ggtitle(gene)
+  return(p)
+})
+
+combined_plot <- wrap_plots(plots_list, ncol = 1)
+
+# Save the combined plot
+ggsave("./Results/Result_Supporting_Files/Human Makrers Trajactory.pdf", combined_plot, width = 10, height = 2.5 * length(plots_list))
+
+
+# Human Markers Dot Plot
+
+HscRNA <- readRDS("./Processed_Objects/HscRNA.rds")
+
+Idents(HscRNA) <- "seurat_clusters"
+
+selected_clusters <- c(5, 1, 2, 8, 6, 0, 4, 9, 10)
+
+HscRNA <- subset(
+  HscRNA,
+  idents = selected_clusters
+)
+
+
+new_cluster_names <- c(
+  "0"  = "Polychromatic Erythroblast",
+  "1"  = "BFU-E",
+  "2"  = "CFU-E",
+  "4"  = "Orthochromatic Erythroblast",
+  "5"  = "MEP",
+  "6"  = "Basophilic Erythroblast",
+  "8"  = "Proerythroblast",
+  "9"  = "Reticulocyte",
+  "10" = "Mature erythrocyte"
+)
+
+human_cluster_order <- c(
+  "MEP",
+  "BFU-E",
+  "CFU-E",
+  "Proerythroblast",
+  "Basophilic Erythroblast",
+  "Polychromatic Erythroblast",
+  "Orthochromatic Erythroblast",
+  "Reticulocyte",
+  "Mature erythrocyte"
+)
+
+HscRNA$annotated_clusters <- plyr::revalue(
+  as.character(HscRNA$seurat_clusters),
+  new_cluster_names
+)
+
+HscRNA$annotated_clusters <- factor(
+  HscRNA$annotated_clusters,
+  levels = human_cluster_order
+)
+
+
+Idents(HscRNA) <- "annotated_clusters"
+
+AFD_genes_human <- c(
+  "CD34",
+  "THY1",
+  "IL3RA",
+  "PTPRC",
+  "CD38",
+  "KIT",
+  "ITGA4",
+  "CD36",
+  "TFRC",
+  "ENG",
+  "GYPA",
+  "GYPB"
+)
+
+
+AFD_genes_human_present <- AFD_genes_human[
+  AFD_genes_human %in% rownames(HscRNA)
+]
+
+missing_genes <- setdiff(
+  AFD_genes_human,
+  AFD_genes_human_present
+)
+
+if (length(missing_genes) > 0) {
+  message(
+    "Missing genes: ",
+    paste(missing_genes, collapse = ", ")
+  )
+}
+
+p <- DotPlot(
+  HscRNA,
+  features = AFD_genes_human_present,
+  group.by = "annotated_clusters",
+  dot.scale = 7,
+  cols = c("lightgrey", "red")
+) +
+  RotatedAxis() +
+  labs(
+    x = NULL,
+    y = NULL,
+    color = "Average expression",
+    size = "Percent expressed"
+  ) +
+  theme_classic(base_size = 11) +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1
+    ),
+    axis.text.y = element_text(
+      face = "bold"
+    ),
+    legend.position = "right"
+  )
+
+print(p)
+
+ggsave(
+  "./Results/S.Fig_5A.pdf",
+  p,
+  width = 7,
+  height = 4
+)
+
+# ==============================================================================
+# SCRIPT 4L: COMPARATIVE VISUALIZATION & MARKER DISCOVERY
+# ==============================================================================
+
+#  Side-by-Side UMAP Visualization
+# To provide a high-level comparison of the erythroid maturation 
+# landscapes in avian (nucleated) and human (enucleating) systems.
+
+# Load the Integrated Avian and Human Seurat objects
+human <- readRDS("./Processed_Objects/HscRNA.rds")
+chicken <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+# Generate baseline UMAP plots for visualization
+chicken_umap <- DimPlot(chicken, reduction = "umap", label = TRUE, label.size = 3) + 
+                ggtitle("Chicken UMAP") + 
+                theme(legend.position = "none")
+
+human_umap <- DimPlot(human, reduction = "umap", label = TRUE, label.size = 3) + 
+              ggtitle("Human UMAP") + 
+              theme(legend.position = "none")
+# Start PDF output for both plots side by side on the same page
+pdf("./Results/S.Fig_4D.pdf", width = 10, height = 4)
+gridExtra::grid.arrange(chicken_umap, human_umap, ncol = 2)
+dev.off()
+
+#  Chicken Cluster Annotation and Reordering
+# We rename and reorder the avian clusters to reflect the biological maturation order from Progenitors to Mature cells.
+new_cluster_names_chicken <- c(
+  "0" = "Late polychromatic blast",
+  "1" = "Mid polychromatic blast",
+  "2" = "Late erythroblast",
+  "3" = "Erythroid progenitor 2",
+  "4" = "Early polychromatic blast",
+  "5" = "Erythroid progenitor 1",
+  "6" = "Immature erythrocyte",
+  "8" = "Early erythroblast",
+  "9" = "Mature erythrocyte-C"
+)
+# Update the chicken cluster labels
+Idents(chicken) <- plyr::mapvalues(Idents(chicken), from = names(new_cluster_names_chicken), to = new_cluster_names_chicken)
+# Define the custom order for chicken clusters
+custom_order_chicken <- c(
+  "Mature erythrocyte-C", "Immature erythrocyte", "Late polychromatic blast", 
+  "Mid polychromatic blast", "Early polychromatic blast", "Late erythroblast", 
+  "Early erythroblast", "Erythroid progenitor 2", "Erythroid progenitor 1"
+)
+Idents(chicken) <- factor(Idents(chicken), levels = custom_order_chicken)
+# Save the updated chicken object
+saveRDS(chicken, file = "./Processed_Objects/BMscRNA_PBscRNA.rds")
+# Rename clusters for human with desired order
+new_cluster_names_human <- c(
+  "5" = "MEP",
+  "1" = "BFU-E",
+  "2" = "CFU-E",
+  "8" = "Proerythroblast",
+  "6" = "Basophilic Erythroblast",
+  "0" = "Polychromatic Erythroblast",
+  "4" = "Orthochromatic Erythroblast",
+  "9" = "Reticulocyte",
+  "10" = "Mature erythrocyte-H"
+)
+# Update the human cluster labels
+Idents(human) <- plyr::mapvalues(Idents(human), from = names(new_cluster_names_human), to = new_cluster_names_human)
+# Define the custom order for human clusters
+custom_order_human <- c(
+  "Mature erythrocyte-H", "Reticulocyte", "Orthochromatic Erythroblast", 
+  "Polychromatic Erythroblast", "Basophilic Erythroblast", 
+  "Proerythroblast", "CFU-E", "BFU-E", "MEP"
+)
+# Reorder human cluster identities
+Idents(human) <- factor(Idents(human), levels = custom_order_human)
+# Save the updated human Seurat object
+saveRDS(human, file = "./Processed_Objects/HscRNA.rds")
+# Confirm save
+print("Updated Seurat objects for chicken and human have been saved with new names.")
+chicken.markers <- FindAllMarkers(chicken,
+  only.pos = TRUE, 
+  min.pct = 0.25,
+  logfc.threshold = 0.25)
+human.markers <- FindAllMarkers(human,
+  only.pos = TRUE, 
+  min.pct = 0.25,
+  logfc.threshold = 0.25)
+# Save chicken markers to an Excel file
+write_xlsx(chicken.markers, path = "./Results/Result_Supporting_Files/chicken_markers.xlsx")
+# Save human markers to an Excel file
+write_xlsx(human.markers, path = "./Results/Result_Supporting_Files/human_markers.xlsx")
+# Save results to RDS files
+saveRDS(chicken.markers, "./Processed_Objects/chicken_markers.rds")
+saveRDS(human.markers, "./Processed_Objects/human_markers.rds")
+
+# ==============================================================================
+# SCRIPT 4M: STAGE-BY-STAGE DIFFERENTIAL EXPRESSION ANALYSIS
+# ==============================================================================
+
+#  Load Updated Seurat Objects
+# We use the re-annotated and re-ordered objects from SCRIPT 4E 
+# to perform pairwise comparisons across the maturation timelines.
+chicken <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+human <- readRDS("./Processed_Objects/HscRNA.rds")
+
+# Chicken Pairwise Comparisons (Avian Maturation)
+# Identify genes regulating the transition between nucleated stages.
+chicken_diff_exp1 <- FindMarkers(chicken, ident.1 = "Mature erythrocyte-C", ident.2 = "Immature erythrocyte")
+chicken_diff_exp2 <- FindMarkers(chicken, ident.1 = "Immature erythrocyte", ident.2 = "Late polychromatic blast")
+chicken_diff_exp3 <- FindMarkers(chicken, ident.1 = "Late polychromatic blast", ident.2 = "Mid polychromatic blast")
+chicken_diff_exp4 <- FindMarkers(chicken, ident.1 = "Mid polychromatic blast", ident.2 = "Early polychromatic blast")
+chicken_diff_exp5 <- FindMarkers(chicken, ident.1 = "Early polychromatic blast", ident.2 = "Late erythroblast")
+chicken_diff_exp6 <- FindMarkers(chicken, ident.1 = "Late erythroblast", ident.2 = "Early erythroblast")
+chicken_diff_exp7 <- FindMarkers(chicken, ident.1 = "Early erythroblast", ident.2 = "Erythroid progenitor 2")
+chicken_diff_exp8 <- FindMarkers(chicken, ident.1 = "Erythroid progenitor 2", ident.2 = "Erythroid progenitor 1")
+
+# Human Pairwise Comparisons (Mammalian Maturation)
+# Identify genes regulating mammalian erythroid progression and enucleation.
+human_diff_exp1 <- FindMarkers(human, ident.1 = "Mature erythrocyte-H", ident.2 = "Reticulocyte")
+human_diff_exp2 <- FindMarkers(human, ident.1 = "Reticulocyte", ident.2 = "Orthochromatic Erythroblast")
+human_diff_exp3 <- FindMarkers(human, ident.1 = "Orthochromatic Erythroblast", ident.2 = "Polychromatic Erythroblast")
+human_diff_exp4 <- FindMarkers(human, ident.1 = "Polychromatic Erythroblast", ident.2 = "Basophilic Erythroblast")
+human_diff_exp5 <- FindMarkers(human, ident.1 = "Basophilic Erythroblast", ident.2 = "Proerythroblast")
+human_diff_exp6 <- FindMarkers(human, ident.1 = "Proerythroblast", ident.2 = "CFU-E")
+human_diff_exp7 <- FindMarkers(human, ident.1 = "CFU-E", ident.2 = "BFU-E")
+human_diff_exp8 <- FindMarkers(human, ident.1 = "BFU-E", ident.2 = "MEP")
+
+# Post-processing and Excel Export
+# We consolidate these findings into multi-sheet Excel workbooks, ensuring gene symbols are explicitly included as a column for readability.
+# Add Gene column from row names for chicken results
+chicken_results_with_genes <- lapply(list(
+  "Mature vs Immature" = chicken_diff_exp1,
+  "Immature vs Late poly" = chicken_diff_exp2,
+  "Late poly vs Mid poly" = chicken_diff_exp3,
+  "Mid poly vs Early poly" = chicken_diff_exp4,
+  "Early poly vs Late erythro" = chicken_diff_exp5,
+  "Late erythro vs Early erythro" = chicken_diff_exp6,
+  "Early eryth vs Erythroid prog 2" = chicken_diff_exp7,
+  "Erythroid prog 2 vs 1" = chicken_diff_exp8
+), function(df) {
+  df$Gene <- rownames(df)  # Add Gene column with row names
+  return(df)
+})
+# Save differential expression results to Excel for chicken
+write.xlsx(chicken_results_with_genes, file = paste0("./Results/Supplementary_Data-8.xlsx"), overwrite = TRUE)
+# Add Gene column from row names for human results
+human_results_with_genes <- lapply(list(
+  "Mature vs Reticulocyte" = human_diff_exp1,
+  "Reticulocyte vs Orthrochromatic" = human_diff_exp2,
+  "Orthrochromatic vs Poly" = human_diff_exp3,
+  "Poly vs Basophilic" = human_diff_exp4,
+  "Basophilic vs Proerythroblast" = human_diff_exp5,
+  "Proerythroblast vs CFU-E" = human_diff_exp6,
+  "CFU-E vs BFU-E" = human_diff_exp7,
+  "BFU-E vs MEP" = human_diff_exp8
+), function(df) {
+  df$Gene <- rownames(df)  # Add Gene column with row names
+  return(df)
+})
+# Save differential expression results to Excel for human
+write.xlsx(human_results_with_genes, file = paste0("./Results/Supplementary_Data-9.xlsx"), overwrite = TRUE)
+
+
+# ==============================================================================
+# SCRIPT 4N: HUMAN METABOLIC PROFILING (scMetabolism)
+# ==============================================================================
+
+# Metabolic Dataset Preparation
+# We analyze the metabolic landscape of human erythropoiesis to understand the energetic requirements of enucleation and terminal maturation.
+
+HscRNA <- readRDS("./Processed_Objects/HscRNA.rds")
+DefaultAssay(HscRNA) <- "RNA" 
+Idents(HscRNA) <- "seurat_clusters"
+HscRNA_Mb <- HscRNA
+
+#  scMetabolism Analysis Workflow
+countexp.Seurat <- sc.metabolism.Seurat(obj = HscRNA_Mb, method = "AUCell", imputation = F, ncores = 6, metabolism.type = "KEGG")
+metabolic.matrix <- as.data.frame(countexp.Seurat@assays$METABOLISM$score)
+print(paste("Metabolic pathways found:", nrow(metabolic.matrix)))
+
+#  Visualization Adjustment
+umap_embeddings <- Embeddings(countexp.Seurat, "umap")  
+colnames(umap_embeddings) <- c("UMAP_1", "UMAP_2")      
+countexp.Seurat@reductions$umap@cell.embeddings <- umap_embeddings
+
+#  Metabolic Pathway Activity (DotPlot)
+pat <- c(
+  "Sulfur metabolism", "Starch and sucrose metabolism", "Sphingolipid metabolism",
+  "Pyrimidine metabolism", "Purine metabolism", "Propanoate metabolism",
+  "Porphyrin and chlorophyll metabolism", "Oxidative phosphorylation",
+  "One carbon pool by folate", "Nitrogen metabolism",
+  "Glyoxylate and dicarboxylate metabolism", "Glycolysis / Gluconeogenesis",
+  "Glutathione metabolism", "Galactose metabolism", "Arginine and proline metabolism"
+)
+
+cluster_names <- c(
+  "5" = "MEP", "1" = "BFU-E", "2" = "CFU-E", "8" = "Proerythroblast",
+  "6" = "Basophilic Erythroblast", "0" = "Polychromatic Erythroblast",
+  "4" = "Orthochromatic Erythroblast", "9" = "Reticulocyte", "10" = "Mature erythrocyte"
+)
+
+pdf("./Results/S.Fig_5C.pdf", width = 10, height = 5)
+DotPlot.metabolism(obj = countexp.Seurat, pathway = pat, phenotype = "seurat_clusters", norm = "y") + 
+    scale_x_discrete(limits = names(cluster_names), labels = cluster_names)
+dev.off()
+
+h_metab_matrix <- as.data.frame(t(countexp.Seurat@assays$METABOLISM$score))
+h_metab_matrix$Stage <- countexp.Seurat$seurat_clusters
+
+# Map Numeric Cluster IDs to Biological Names
+h_metab_matrix$StageName <- plyr::revalue(as.character(h_metab_matrix$Stage), cluster_names)
+
+# Filter and Summarize for OXPHOS and Glycolysis
+h_plot_data <- h_metab_matrix %>%
+  dplyr::select(`Oxidative phosphorylation`, `Glycolysis / Gluconeogenesis`, StageName) %>%
+  tidyr::pivot_longer(cols = -StageName, names_to = "Pathway", values_to = "Score") %>%
+  dplyr::group_by(StageName, Pathway) %>%
+  dplyr::summarize(Mean_Score = mean(Score), .groups = 'drop')
+
+# Set Human Biological Maturation Order
+human_maturation_order <- c(
+  "MEP", "BFU-E", "CFU-E", "Proerythroblast", 
+  "Basophilic Erythroblast", "Polychromatic Erythroblast", 
+  "Orthochromatic Erythroblast", "Reticulocyte", "Mature erythrocyte"
+)
+h_plot_data$StageName <- factor(h_plot_data$StageName, levels = human_maturation_order)
+
+# Generate and Save the Human Trend Plot 
+p_human_metab_trend <- ggplot(h_plot_data,  
+                              aes(x = StageName,  
+                                  y = Mean_Score,  
+                                  color = Pathway,  
+                                  group = Pathway)) + 
+  geom_line(linewidth = 1) + 
+  geom_point(size = 3) + 
+  theme_classic(base_size = 14) + 
+  theme( 
+    axis.text.x = element_text(angle = 45, hjust = 1, color = "black"), 
+    legend.position = "top" 
+  ) + 
+  scale_color_manual(values = c( 
+    "Oxidative phosphorylation" = "#D95F02",  
+    "Glycolysis / Gluconeogenesis" = "#1B9E77" 
+  )) +
+  scale_x_discrete(limits = rev(levels(h_plot_data$StageName))) +
+  labs( 
+    title = "Human Metabolic Adaptation",  
+    subtitle = "ATP-intensive remodeling trajectory", 
+    y = "AUCell Score (Mean)",  
+    x = "Maturation Stage" 
+  ) 
+ 
+ggsave( 
+  "./Results/Fig_3F.pdf",  
+  p_human_metab_trend,  
+  width = 4,  
+  height = 4 
+)
+
+# ==============================================================================
+# SCRIPT 4O:  VIM EXPRESSION ACROSS ERYTHROID STAGES: CHICKEN vs HUMAN
+# ==============================================================================
+
+library(Seurat)
+library(ggplot2)
+library(patchwork)
+library(plyr)
+library(openxlsx)
+
+# ---- 1. Load data ------------------------------------------------------------
+chicken <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+human   <- readRDS("./Processed_Objects/HscRNA.rds")
+
+DefaultAssay(chicken) <- "integrated"
+DefaultAssay(human)   <- "RNA"
+
+# ---- 2. Stage annotation (early -> late, left to right on the x-axis) --------
+order_chicken <- c(
+  "Erythroid progenitor 1", "Erythroid progenitor 2", "Early erythroblast",
+  "Late erythroblast", "Early polychromatic blast", "Mid polychromatic blast",
+  "Late polychromatic blast", "Immature erythrocyte", "Mature erythrocyte-C"
+)
+chicken$cell_type <- plyr::mapvalues(
+  x    = chicken$seurat_clusters,
+  from = c(5, 3, 8, 2, 4, 1, 0, 6, 9),
+  to   = order_chicken
+)
+Idents(chicken) <- factor(chicken$cell_type, levels = order_chicken)
+
+clusters_human <- c(
+  "5" = "MEP", "1" = "BFU-E", "2" = "CFU-E", "8" = "Proerythroblast",
+  "6" = "Basophilic Erythroblast", "0" = "Polychromatic Erythroblast",
+  "4" = "Orthochromatic Erythroblast", "9" = "Reticulocyte",
+  "10" = "Mature erythrocyte-H"
+)
+order_human <- unname(clusters_human[c("5", "1", "2", "8", "6", "0", "4", "9", "10")])
+human$cell_type <- plyr::mapvalues(
+  human$seurat_clusters,
+  from = names(clusters_human),
+  to   = clusters_human
+)
+Idents(human) <- factor(human$cell_type, levels = order_human)
+
+# ---- 3. Check that VIM exists in both objects --------------------------------
+gene <- "VIM"
+for (obj_name in c("chicken", "human")) {
+  if (!gene %in% rownames(get(obj_name))) {
+    stop(gene, " not found in ", obj_name, " object. Check the gene symbol.")
+  }
+}
+
+# ---- 4. Violin plot function (one gene, one species) -------------------------
+plot_vim <- function(object, title, fill_col) {
+  p <- VlnPlot(object, features = gene, pt.size = 0, cols = rep(fill_col, length(levels(Idents(object))))) +
+    geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA, color = "black")
+
+  n_labels <- paste0("n=", as.integer(table(Idents(object))))
+  max_y <- max(FetchData(object, vars = gene), na.rm = TRUE) * 1.1
+
+  p +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.2))) +
+    coord_cartesian(clip = "off") +
+    annotate("text", x = seq_along(n_labels), y = max_y, label = n_labels,
+             size = 3, angle = 45, vjust = 0.5, fontface = "bold") +
+    labs(title = title, y = "VIM expression (log-normalized)") +
+    theme(
+      axis.text.x  = element_text(angle = 45, hjust = 1, size = 8),
+      axis.title.x = element_blank(),
+      axis.title.y = element_text(size = 9),
+      plot.title   = element_text(hjust = 0.5, size = 10, face = "bold"),
+      legend.position = "none"
+    )
+}
+
+p_chicken <- plot_vim(chicken, "Chicken: VIM", "#E69F00")
+p_human   <- plot_vim(human,   "Human: VIM",   "#009E73")
+
+# ---- 5. Save the figure ------------------------------------------------------
+dir.create("./Results", showWarnings = FALSE)
+pdf("./Results/S.Figure_6b.pdf", width = 10, height = 4)
+print(p_chicken | p_human)
+dev.off()
+
+# ---- 6. Export numbers behind the plot (percent expressing and mean) ---------
+summarise_vim <- function(object, species) {
+  expr <- FetchData(object, vars = gene)[, 1]
+  df <- data.frame(stage = as.character(Idents(object)), expr = expr)
+  out <- do.call(rbind, lapply(split(df, df$stage), function(d) {
+    data.frame(
+      species      = species,
+      stage        = d$stage[1],
+      n_cells      = nrow(d),
+      pct_expr     = round(100 * mean(d$expr > 0), 1),
+      mean_expr    = round(mean(d$expr), 3),
+      median_expr  = round(median(d$expr), 3)
+    )
+  }))
+  out[match(levels(Idents(object)), out$stage), ]
+}
+
+vim_summary <- rbind(
+  summarise_vim(chicken, "Chicken"),
+  summarise_vim(human,   "Human")
+)
+write.xlsx(vim_summary, "./Results/Supplementary Data 13.xlsx", rowNames = FALSE)
+print(vim_summary)
+
+
+# ==============================================================================
+# SCRIPT 4P: Pseudo Time Trajactory 
+# ==============================================================================
+
+
+# FILE PATHS
+
+human_rds_path <- "./Processed_Objects/HscRNA.rds"
+
+output_pdf_path <- "./Results/S.Fig_4C.pdf"
+
+output_xlsx_path <- "./Results/Result_Supporting_Files/Human_Pseudotime_Data.xlsx"
+
+# Close any previously open graphics device
+if (!is.null(dev.list())) dev.off()
+
+
+cat("\n--- Loading human erythroid dataset ---\n")
+
+human <- readRDS(human_rds_path)
+
+cat("Human cells:", ncol(human), "\n")
+
+
+new_cluster_names_human <- c(
+  "5"  = "MEP",
+  "1"  = "BFU-E",
+  "2"  = "CFU-E",
+  "8"  = "Proerythroblast",
+  "6"  = "Basophilic Erythroblast",
+  "0"  = "Polychromatic Erythroblast",
+  "4"  = "Orthochromatic Erythroblast",
+  "9"  = "Reticulocyte",
+  "10" = "Mature erythrocyte-H"
+)
+
+human$cell_type <- plyr::mapvalues(
+  x    = as.character(human$seurat_clusters),
+  from = names(new_cluster_names_human),
+  to   = new_cluster_names_human
+)
+
+# Developmental order: progenitor -> terminal erythroid
+custom_order_human <- c(
+  "MEP",
+  "BFU-E",
+  "CFU-E",
+  "Proerythroblast",
+  "Basophilic Erythroblast",
+  "Polychromatic Erythroblast",
+  "Orthochromatic Erythroblast",
+  "Reticulocyte",
+  "Mature erythrocyte-H"
+)
+
+human$cell_type <- factor(
+  human$cell_type,
+  levels = custom_order_human
+)
+
+Idents(human) <- human$cell_type
+
+cat("\nHuman developmental clusters:\n")
+print(table(human$cell_type))
+
+
+cat("\n--- Converting Seurat object to Monocle 3 ---\n")
+
+# Handle Seurat v5 multi-layer RNA assay if necessary
+if ("Assay5" %in% class(human[["RNA"]])) {
+
+  count_layers <- grep(
+    "^counts\\.",
+    Layers(human[["RNA"]]),
+    value = TRUE
+  )
+
+  if (length(count_layers) > 1) {
+
+    cat("Multiple Seurat v5 count layers detected.\n")
+    cat("Merging count layers before Monocle 3 conversion...\n")
+
+    list_of_counts <- lapply(
+      count_layers,
+      function(layer) {
+        LayerData(
+          human,
+          assay = "RNA",
+          layer = layer
+        )
+      }
+    )
+
+    merged_counts <- SeuratObject:::RowMergeSparseMatrices(
+      list_of_counts[[1]],
+      list_of_counts[2:length(list_of_counts)]
+    )
+
+    # Preserve metadata
+    human_sanitized <- CreateSeuratObject(
+      counts = merged_counts,
+      meta.data = human@meta.data
+    )
+
+    # Recalculate basic dimensional reduction
+    human_sanitized <- NormalizeData(
+      human_sanitized,
+      normalization.method = "LogNormalize",
+      scale.factor = 10000
+    )
+
+    human_sanitized <- FindVariableFeatures(
+      human_sanitized,
+      selection.method = "vst",
+      nfeatures = 2000
+    )
+
+    human_sanitized <- ScaleData(human_sanitized)
+
+    human_sanitized <- RunPCA(
+      human_sanitized,
+      npcs = 30
+    )
+
+    set.seed(1234)
+
+    human_sanitized <- RunUMAP(
+      human_sanitized,
+      dims = 1:20
+    )
+
+    # Restore developmental identity
+    human_sanitized$cell_type <- factor(
+      human$cell_type[colnames(human_sanitized)],
+      levels = custom_order_human
+    )
+
+    Idents(human_sanitized) <- human_sanitized$cell_type
+
+    human <- human_sanitized
+  }
+}
+
+# Convert to Monocle 3
+human_cds <- as.cell_data_set(human)
+
+# Make sure cell type information is available
+colData(human_cds)$cell_type <- human$cell_type
+
+
+cat("\n--- Constructing human developmental trajectory ---\n")
+
+set.seed(1234)
+
+human_cds <- cluster_cells(
+  human_cds,
+  reduction_method = "UMAP"
+)
+
+set.seed(1234)
+
+human_cds <- learn_graph(
+  human_cds,
+  use_partition = FALSE
+)
+
+cat("Trajectory graph successfully learned.\n")
+
+
+cat("\n--- Rooting trajectory at MEP ---\n")
+
+root_cells <- colnames(human_cds)[
+  colData(human_cds)$cell_type == "MEP"
+]
+
+if (length(root_cells) == 0) {
+  stop("ERROR: No MEP cells were found for trajectory rooting.")
+}
+
+cat("Number of MEP root cells:", length(root_cells), "\n")
+
+human_cds <- order_cells(
+  human_cds,
+  root_cells = root_cells
+)
+
+cat("Human pseudotime successfully calculated.\n")
+
+
+human_pseudotime <- pseudotime(human_cds)
+
+pseudotime_df <- data.frame(
+  cell = names(human_pseudotime),
+  pseudotime = as.numeric(human_pseudotime),
+  cell_type = colData(human_cds)$cell_type
+)
+
+# Remove cells with undefined pseudotime
+pseudotime_df <- pseudotime_df %>%
+  filter(is.finite(pseudotime))
+
+# Order clusters developmentally
+pseudotime_df$cell_type <- factor(
+  pseudotime_df$cell_type,
+  levels = custom_order_human
+)
+
+
+cat("\n--- Generating human developmental pseudotime plot ---\n")
+
+p_human <- plot_cells(
+  human_cds,
+  color_cells_by = "pseudotime",
+  show_trajectory_graph = TRUE,
+
+  # Do not label individual cells
+  label_cell_groups = FALSE,
+  label_leaves = FALSE,
+  label_branch_points = FALSE,
+
+  # UMAP appearance
+  cell_size = 0.7,
+  graph_label_size = 0,
+
+  # No cluster labels on the plot
+  group_label_size = 0
+) +
+  labs(
+    title = "Human Erythroid Developmental Trajectory",
+    x = "UMAP 1",
+    y = "UMAP 2",
+    color = "Pseudotime"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold"
+    ),
+    legend.position = "right"
+  )
+
+print(p_human)
+
+
+ggsave(
+  filename = output_pdf_path,
+  plot = p_human,
+  width = 8,
+  height = 7,
+  units = "in",
+  device = "pdf"
+)
+
+cat("\nHuman pseudotime plot saved to:\n")
+cat(output_pdf_path, "\n")
+
+
+write.xlsx(
+  pseudotime_df,
+  file = output_xlsx_path,
+  rowNames = FALSE
+)
+
+cat("\nPseudotime data saved to:\n")
+cat(output_xlsx_path, "\n")
+
+summary_df <- pseudotime_df %>%
+  group_by(cell_type) %>%
+  summarise(
+    n_cells = n(),
+    median_pseudotime = median(pseudotime),
+    mean_pseudotime = mean(pseudotime),
+    min_pseudotime = min(pseudotime),
+    max_pseudotime = max(pseudotime),
+    .groups = "drop"
+  )
+
+cat("\n--- Human developmental pseudotime summary ---\n")
+print(summary_df)
+
+
+# ==============================================================================
+# SCRIPT 4Q: HUMAN HEMATOPOIETIC NICHE SIGNALING
+# ==============================================================================
+
+#  Project Setup and Path Configuration
+# We utilize the full Bandyopadhyay atlas to extract myeloid "support" 
+# cells and the focused HscRNA object for the erythroid "target" cells.
+
+# Define Input Paths
+full_human_data_path <- "./Raw_Data/Public_Reference_Data/Human_Atlas_HscRNA/GSE253355.rds"
+erythroid_only_path  <- "./Processed_Objects/HscRNA.rds"
+
+# Define Output Paths
+final_plots_pdf     <- file.path("./Results/S.Fig_5D-E.pdf")
+final_results_excel <- file.path("./Results/Supplementary_Data-16.xlsx")
+
+cat("Setup complete. Paths are set for the final focused analysis.\n")
+
+
+#  Prepare the Focused Niche Object
+# Create a unified Seurat object containing myeloid niche cells and the early stages of the erythroid maturation trajectory.
+cat("\n--- Part 1: Preparing a focused Myeloid + Erythroid object ---\n")
+full_b_marrow <- readRDS(full_human_data_path)
+myeloid_names <- c("Macrophages", "Monocyte", "Late Myeloid", "Early Myeloid Progenitor", "GMP") 
+myeloid_cells <- subset(full_b_marrow, subset = cluster_anno_l2 %in% myeloid_names)
+myeloid_cells$cell_type_final <- "Myeloid"
+rm(full_b_marrow); gc()
+erythroid_lineage <- readRDS(erythroid_only_path)
+new_cluster_names_human <- c("5"="MEP", "1"="BFU-E", "2"="CFU-E")
+erythroid_lineage$cell_type_final <- plyr::mapvalues(
+  erythroid_lineage$seurat_clusters, 
+  from = names(new_cluster_names_human), 
+  to = new_cluster_names_human,
+  warn_missing = FALSE
+)
+early_erythroid_cells <- subset(erythroid_lineage, subset = cell_type_final %in% c("MEP", "BFU-E", "CFU-E"))
+DefaultAssay(myeloid_cells) <- "RNA"; DefaultAssay(early_erythroid_cells) <- "RNA"
+myeloid_cells <- NormalizeData(myeloid_cells); early_erythroid_cells <- NormalizeData(early_erythroid_cells)
+merged_obj <- merge(myeloid_cells, y = early_erythroid_cells)
+
+#  Run CellChat Analysis Workflow
+# Identify over-expressed ligands and receptors and calculate communication probabilities between the niche and progenitors.
+cat("\n--- Part 2: Running CellChat on the focused dataset ---\n")
+data.input <- GetAssayData(merged_obj, assay = "RNA", layer = "data") 
+meta <- merged_obj@meta.data
+cell_group_order <- c("Myeloid", "MEP", "BFU-E", "CFU-E")
+meta$cell_chat_group <- factor(meta$cell_type_final, levels = cell_group_order)
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "cell_chat_group")
+CellChatDB <- CellChatDB.human
+cellchat@DB <- subsetDB(CellChatDB, search = "Secreted Signaling") 
+cellchat <- subsetData(cellchat)
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- computeCommunProb(cellchat)
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+cat("CellChat analysis complete.\n")
+
+# Niche Visualization . Visualize the overall interaction strength and specific 
+# ligand-receptor pairs bridging myeloid cells and erythroid progenitors.
+cat("\n--- Part 3: Visualizing results and exporting to Excel ---\n")
+pdf(final_plots_pdf, width = 5, height = 4, onefile = TRUE)
+all_interactions_df <- subsetCommunication(cellchat)
+pval_threshold <- 0.01
+significant_interactions_df <- all_interactions_df %>%
+  filter(pval < pval_threshold)
+cat(paste("Found", nrow(significant_interactions_df), "interactions with p-value <", pval_threshold, "\n"))
+netVisual_circle(cellchat@net$weight, vertex.weight = as.numeric(table(cellchat@meta$cell_chat_group)), 
+                 weight.scale = T, label.edge = F, title.name = "Interaction Strength - Myeloid to Early Progenitors")
+
+# Ligand-Receptor Bubble Plot
+# To identify specific signaling axes targeting early progenitors.
+p_bubble <- netVisual_bubble(cellchat, sources.use = "Myeloid", remove.isolate = FALSE) +
+  labs(title = "Specific Ligand-Receptor Pairs from Myeloid Cells")
+print(p_bubble)
+dev.off() 
+
+#  Data Export
+# Export strictly filtered significant interactions for final manuscript documentation.
+cat("Exporting key data to Excel...\n")
+pathway_summary_filtered_df <- significant_interactions_df %>%
+  dplyr::group_by(pathway_name, source, target) %>%
+  dplyr::summarise(total_interaction_strength = sum(prob), .groups = 'drop') %>%
+  dplyr::arrange(desc(total_interaction_strength))
+avg_expression_df <- as.data.frame(cellchat@data.signaling)
+list_of_datasets_to_export <- list(
+  "Significant_Interactions_p0.01" = significant_interactions_df,
+  "Ranked_Pathways_p0.01"          = pathway_summary_filtered_df,
+  "All_Interactions_Found"         = all_interactions_df, 
+  "Avg_Gene_Expression"            = tibble::rownames_to_column(avg_expression_df, "gene")
+)
+write.xlsx(list_of_datasets_to_export, file = final_results_excel, rowNames = FALSE)
+cat("\n\n--- FINAL FOCUSED ANALYSIS COMPLETE ---\n")
+
+
+# ==============================================================================
+# SCRIPT 4R: Characterization of the Avian Immuno-Erythroid Niche Axis and the Ontogeny of Erythroid Immunity
+# ==============================================================================
+
+
+#  Load Bone Marrow Data & Marker Discovery
+# To identify the baseline transcriptomic signatures of all 16 bone marrow 
+# populations before modeling niche-specific signaling.
+load("./Processed_Objects/BMscRNA_Processed.Rdata")
+BMscRNA <- PrepSCTFindMarkers(BMscRNA, assay = "SCT", verbose = TRUE)
+BMscRNA.markers <- FindAllMarkers(BMscRNA,
+  only.pos = TRUE, 
+  min.pct = 0.25,
+  logfc.threshold = 0.25)
+
+#  Niche Annotation & Order Standardization
+# We define the full bone marrow niche, including lymphoid and myeloid 
+# support cells, to identify global signaling hubs.
+DefaultAssay(BMscRNA) <- "RNA"
+cluster2type <- c(
+  "0" = "Late polychromatic blast",
+  "1" = "Early polychromatic blast",
+  "2" = "Late erythroblast",
+  "3" = "Erythroid progenitor 1",
+  "4" = "Mid polychromatic blast",
+  "5" = "Erythroid progenitor 2",
+  "6" = "Early erythroblast",
+  "7" = "Hematopoietic stem cells",
+  "8" = "Immature erythrocyte",
+  "9" = "Thrombocyte precursor",
+  "10" = "T cells",
+  "11" = "Eosinophil",
+  "12" = "Common myeloid progenitors",
+  "13" = "B cells",
+  "14" = "Mesenchymal stem cells",
+  "15" = "Proliferating cells"
+)
+BMscRNA[['cell_type']] = unname(cluster2type[BMscRNA@meta.data$seurat_clusters])
+cluster_order <- c(
+  "Immature erythrocyte", "Late polychromatic blast", "Mid polychromatic blast", 
+  "Early polychromatic blast", "Late erythroblast", "Early erythroblast", 
+  "Erythroid progenitor 2", "Erythroid progenitor 1", "Proliferating cells", 
+  "Mesenchymal stem cells", "Hematopoietic stem cells", "T cells", 
+  "Common myeloid progenitors", "Thrombocyte precursor", "Eosinophil", "B cells"
+)
+BMscRNA@meta.data$cell_type <- factor(BMscRNA@meta.data$cell_type, levels = cluster_order)
+set.seed(111)
+cluster_colors <- c(
+  "#6B92B9", "#D48A9C", "#6F9CBE", "#9CAF74", "#C1B06D", 
+  "#B5B500", "#BAB77C", "#D7868E", "#D46969", "#6BA0A7", 
+  "#6BAFAD", "#A6A6A6", "#BF6E6E", "#A982B2", 
+  "#88A1A8", "#A45757"
+)
+
+#  CellChat Object Construction: Global Niche
+# We utilize the human signaling database to infer 1-to-1 orthologous 
+# communication patterns in the chicken bone marrow.
+data.input <- GetAssayData(BMscRNA, assay = "RNA", slot = "data")
+labels <- BMscRNA$cell_type
+meta <- data.frame(labels = labels, row.names = names(labels))
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "labels")
+CellChatDB <- CellChatDB.human 
+cellchat@DB <- CellChatDB
+
+#  Communication Probability Inference
+# Using the truncatedMean method (trim=0.1) as specified in the Methods 
+# to calculate stable signaling probabilities.
+cellchat <- subsetData(cellchat) 
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+cellchat <- computeCommunProb(cellchat, type = "truncatedMean", trim = 0.1, population.size = FALSE)
+cellchat <- filterCommunication(cellchat, min.cells = 5)
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+
+#  Signaling Role & Centrality Analysis
+# To identify which populations serve as primary senders or 
+# receivers of systemic signals in the niche.
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+nPathway <- length(cellchat@netP$pathways)
+groupSize <- as.numeric(table(cellchat@idents))
+write.csv(as.data.frame(cellchat@net$weight), 
+          file = "./Results/Supplementary_Data-19.csv", 
+          row.names = TRUE)
+pathways <- cellchat@netP$pathways
+cell_groups <- levels(cellchat@idents)
+df_outgoing <- matrix(0, nrow = length(pathways), ncol = length(cell_groups), 
+                      dimnames = list(pathways, cell_groups))
+for (p in pathways) {
+  df_outgoing[p, ] <- cellchat@netP$centr[[p]]$outdeg
+}
+df_incoming <- matrix(0, nrow = length(pathways), ncol = length(cell_groups), 
+                      dimnames = list(pathways, cell_groups))
+for (p in pathways) {
+  df_incoming[p, ] <- cellchat@netP$centr[[p]]$indeg
+}
+
+wb_roles <- createWorkbook()
+addWorksheet(wb_roles, "Outgoing_Signaling")
+writeData(wb_roles, "Outgoing_Signaling", as.data.frame(df_outgoing), rowNames = TRUE)
+
+addWorksheet(wb_roles, "Incoming_Signaling")
+writeData(wb_roles, "Incoming_Signaling", as.data.frame(df_incoming), rowNames = TRUE)
+
+saveWorkbook(wb_roles,
+             file = "./Results/Supplementary_Data-21.xlsx",
+             overwrite = TRUE)
+
+# Global Signaling Heatmaps 
+pdf("./Results/S.Fig_10B.pdf", width = 10, height = 8)
+p1 <- netAnalysis_signalingRole_heatmap(
+  cellchat, 
+  pattern = "outgoing", 
+  font.size = 8,               
+  font.size.title = 10,
+  height = unit(nPathway * 0.35, "cm") 
+)
+p2 <- netAnalysis_signalingRole_heatmap(
+  cellchat, 
+  pattern = "incoming", 
+  font.size = 8, 
+  font.size.title = 10,
+  height = unit(nPathway * 0.35, "cm")
+)
+ComplexHeatmap::draw(p1 + p2, ht_gap = unit(1, "cm"))
+dev.off()
+
+#  Global Network Visualization 
+pdf("./Results/S.Fig_10A.pdf", width = 7, height = 4)
+par(mar = c(1, 1, 1, 1)) 
+netVisual_circle(
+  cellchat@net$weight,
+  vertex.weight = groupSize * 0.7,   
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  vertex.label.cex = 0.8,            
+  edge.width.max = 5,               
+  title.name = "Global Interaction Strength: BM Niche",
+  arrow.size = 0.1,
+  margin = 0.2                      
+)
+dev.off()
+
+#  Immuno-Erythroid Axis Subset Analysis
+clusters_of_interest <- c(
+  "Erythroid progenitor 1",
+  "Erythroid progenitor 2",
+  "T cells",
+  "B cells"
+)
+BMscRNA_subset <- subset(BMscRNA, subset = cell_type %in% clusters_of_interest)
+DefaultAssay(BMscRNA_subset) <- "RNA"
+data.input <- GetAssayData(BMscRNA_subset, assay = "RNA", slot = "data")
+labels <- BMscRNA_subset$cell_type
+meta <- data.frame(cell_type = labels, row.names = names(labels))
+cellchat_subset <- createCellChat(object = data.input, meta = meta, group.by = "cell_type")
+cellchat_subset@DB <- CellChatDB.human  
+cellchat_subset <- subsetData(cellchat_subset)
+cellchat_subset <- identifyOverExpressedGenes(cellchat_subset)
+cellchat_subset <- identifyOverExpressedInteractions(cellchat_subset)
+cellchat_subset <- computeCommunProb(cellchat_subset, type = "truncatedMean", trim = 0.1, population.size = FALSE)
+cellchat_subset <- filterCommunication(cellchat_subset, min.cells = 5)
+cellchat_subset <- computeCommunProbPathway(cellchat_subset)
+cellchat_subset <- aggregateNet(cellchat_subset)
+cellchat_subset <- netAnalysis_computeCentrality(cellchat_subset, slot.name = "netP")
+
+#  Visualizing Lymphoid-to-Erythroid Signals 
+nPathway <- length(cellchat_subset@netP$pathways)
+pdf("./Results/Fig_7A.pdf", width = 12, height = 6)
+p_out <- netAnalysis_signalingRole_heatmap(cellchat_subset, pattern = "outgoing",
+                                           font.size = 11, height = unit(nPathway * 0.7, "cm"))
+p_in <- netAnalysis_signalingRole_heatmap(cellchat_subset, pattern = "incoming",
+                                          font.size = 11, height = unit(nPathway * 0.7, "cm"))
+ComplexHeatmap::draw(p_out + p_in, ht_gap = unit(2.5, "cm"))
+dev.off()
+
+#  Top Signaling Pathways & Focused Immune Axis 
+groupSize <- as.numeric(table(cellchat_subset@idents))
+pdf("./Results/Result_Supporting_Files/Subset_Erythroid_Immune_Cells.pdf", width = 12, height = 18)
+netVisual_circle(cellchat_subset@net$weight,
+                 vertex.weight = groupSize,
+                 weight.scale = TRUE,
+                 label.edge = FALSE,
+                 vertex.label.cex = 1.3,
+                 edge.width.max = 12,
+                 title.name = "Subset Interaction Strength: Erythroid + T/B")
+dev.off()
+
+pathway_weights <- sapply(cellchat_subset@netP$pathways, function(pathway) {
+  sum(cellchat_subset@netP[[pathway]]$prob)
+})
+top25_pathways <- names(sort(pathway_weights, decreasing = TRUE))[1:min(25, length(pathway_weights))]
+p_top25 <- netVisual_bubble(cellchat_subset,
+                            sources.use = clusters_of_interest,
+                            targets.use = clusters_of_interest,
+                            signaling = top25_pathways,
+                            remove.isolate = TRUE,
+                            font.size = 8)
+p_top25_final <- p_top25 + 
+  scale_size_continuous(range = c(2, 8)) + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
+    axis.text.y = element_text(size = 7),
+    plot.margin = margin(5, 5, 5, 5)
+  )
+
+pdf("./Results/S.Fig_10C.pdf", width = 7, height = 5)
+print(p_top25_final)
+dev.off()
+
+focused_pathways <- c("IFN-II", "BAFF", "MIF", "APP")
+
+p_foc <- netVisual_bubble(cellchat_subset, 
+                          sources.use = clusters_of_interest, 
+                          targets.use = clusters_of_interest, 
+                          signaling = focused_pathways, 
+                          remove.isolate = TRUE,
+                          font.size = 9) 
+
+p_foc_final <- p_foc + 
+  scale_size_continuous(range = c(6, 13)) + 
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 9, face = "bold"),
+    axis.text.y = element_text(size = 9, face = "bold"),
+    plot.margin = margin(2, 2, 2, 2),
+    legend.key.size = unit(0.5, "cm")
+  )
+
+pdf("./Results/Fig_7B.pdf", width = 6, height = 4)
+print(p_foc_final)
+dev.off()
+
+#  Exporting Signaling Data
+df_focused <- subsetCommunication(cellchat_subset, signaling = focused_pathways,
+                                  sources.use = clusters_of_interest, targets.use = clusters_of_interest)
+df_top25 <- subsetCommunication(cellchat_subset, signaling = top25_pathways,
+                                sources.use = clusters_of_interest, targets.use = clusters_of_interest)
+wb <- createWorkbook()
+addWorksheet(wb, "Focused_Signaling")
+writeData(wb, "Focused_Signaling", df_focused[order(df_focused$prob, decreasing = TRUE), ])
+
+addWorksheet(wb, "Top25_Signaling")
+writeData(wb, "Top25_Signaling", df_top25[order(df_top25$prob, decreasing = TRUE), ])
+
+saveWorkbook(wb,
+             file = "./Results/Supplementary_Data-22.xlsx",
+             overwrite = TRUE)
+
+#  Trajectory Validation: JAK-STAT Pathway Ontogeny
+BMscRNA_PBscRNA <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+new_cluster_names <- c(
+  "0" = "Late polychromatic blast", 
+  "1" = "Mid polychromatic blast",
+  "2" = "Late erythroblast", 
+  "3" = "Erythroid progenitor 2",
+  "4" = "Early polychromatic blast", 
+  "5" = "Erythroid progenitor 1",
+  "6" = "Immature erythrocyte", 
+  "8" = "Early erythroblast",
+  "9" = "Mature erythrocyte"
+)
+Idents(BMscRNA_PBscRNA) <- "seurat_clusters"
+BMscRNA_PBscRNA <- RenameIdents(BMscRNA_PBscRNA, new_cluster_names)
+
+new_order <- c(
+  "Mature erythrocyte", "Immature erythrocyte", "Late polychromatic blast", 
+  "Mid polychromatic blast", "Early polychromatic blast", "Late erythroblast", 
+  "Early erythroblast", "Erythroid progenitor 2", "Erythroid progenitor 1"
+)
+BMscRNA_PBscRNA@active.ident <- factor(Idents(BMscRNA_PBscRNA), levels = rev(new_order))
+
+DefaultAssay(BMscRNA_PBscRNA) <- "RNA"
+BMscRNA_PBscRNA <- JoinLayers(BMscRNA_PBscRNA)
+BMscRNA_PBscRNA <- NormalizeData(BMscRNA_PBscRNA)
+
+#  Immune Gene Expression Mapping 
+genes_to_plot <- c("IFNAR1", "JAK1", "JAK2", "MX1", "SOCS1", "SOCS2", "STAT1")
+dot_plot <- DotPlot(
+  BMscRNA_PBscRNA, 
+  features = genes_to_plot, 
+  dot.scale = 8,        
+  scale = TRUE          
+) + 
+
+  scale_colour_gradientn(
+    colours = c("lightgrey", "#ff9980", "#ff4d29", "#e60000"),
+    limits = c(-1, 2),  
+    oob = scales::squish
+  ) +
+  coord_fixed(ratio = 0.8) + 
+  theme_bw() +         
+  theme(
+    panel.grid.major = element_line(color = "grey95", linewidth = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "black", fill=NA, size=1),
+    axis.text.x = element_text(size = 10, face = "bold", color = "black", angle = 45, hjust = 0.5), 
+    axis.text.y = element_text(size = 10, face = "bold", color = "black"),
+    axis.title = element_text(size = 12, face = "bold"),
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9),
+    legend.position = "right",
+    plot.title = element_blank(),    
+    plot.subtitle = element_blank()
+  ) +
+  labs(
+    x = "Genes",
+    y = "Developmental Stage",
+    color = "Average\nExpression",
+    size = "Percent\nExpressed"
+  )
+ggsave("./Results/Fig_7C.pdf", 
+       plot = dot_plot, 
+       width = 7, 
+       height = 5, 
+       useDingbats = FALSE)
+
+```
+
+
+
+
+```{r}
+
+# ==============================================================================
+# SCRIPT 4S: HUMAN VS CHICKEN DEVELOPMENTAL MARKER DOT PLOTS (Supp. Fig. 5A)
+# ==============================================================================
+# PURPOSE:
+#   Same surface/developmental markers, same layout, across erythroid maturation
+#   in human and chicken. Genes with no annotated chicken counterpart are
+#   reported in the caption, not plotted as zeros.
+# INPUT:  ./Processed_Objects/HscRNA.rds, BMscRNA_PBscRNA.rds
+# OUTPUT: ./Results/S.Fig_5A_human_vs_chicken.pdf
+# ==============================================================================
+
+setwd("./Avian-Erythroid-Atlas")
+library(Seurat); library(ggplot2); library(patchwork)
+
+human   <- readRDS("./Processed_Objects/HscRNA.rds")
+chicken <- readRDS("./Processed_Objects/BMscRNA_PBscRNA.rds")
+
+human_names <- c("5" = "MEP", "1" = "BFU-E", "2" = "CFU-E", "8" = "Proerythroblast",
+                 "6" = "Basophilic Erythroblast", "0" = "Polychromatic Erythroblast",
+                 "4" = "Orthochromatic Erythroblast", "9" = "Reticulocyte",
+                 "10" = "Mature erythrocyte-H")
+chicken_names <- c("5" = "Erythroid progenitor 1", "3" = "Erythroid progenitor 2",
+                   "8" = "Early erythroblast", "2" = "Late erythroblast",
+                   "4" = "Early polychromatic blast", "1" = "Mid polychromatic blast",
+                   "0" = "Late polychromatic blast", "6" = "Immature erythrocyte",
+                   "9" = "Mature erythrocyte-C")
+
+human_order <- c("MEP", "BFU-E", "CFU-E", "Proerythroblast", "Basophilic Erythroblast",
+                 "Polychromatic Erythroblast", "Orthochromatic Erythroblast",
+                 "Reticulocyte", "Mature erythrocyte-H")
+chicken_order <- c("Erythroid progenitor 1", "Erythroid progenitor 2", "Early erythroblast",
+                   "Early polychromatic blast", "Mid polychromatic blast",
+                   "Late polychromatic blast", "Late erythroblast",
+                   "Immature erythrocyte", "Mature erythrocyte-C")
+
+prep_obj <- function(x, name_map, stage_levels) {
+  st <- unname(name_map[as.character(x$seurat_clusters)])
+  x$stage <- st
+  x <- subset(x, cells = colnames(x)[!is.na(x$stage)])
+  x$stage <- factor(x$stage, levels = stage_levels)
+  stopifnot(!any(is.na(x$stage)))
+  DefaultAssay(x) <- "RNA"
+  x <- tryCatch(JoinLayers(x), error = function(e) x)
+  if (!("data" %in% Layers(x[["RNA"]]))) x <- NormalizeData(x)
+  x
+}
+human_obj   <- prep_obj(human,   human_names,   human_order)
+chicken_obj <- prep_obj(chicken, chicken_names, chicken_order)
+
+cat("Human cells per stage:\n");   print(table(human_obj$stage))
+cat("Chicken cells per stage:\n"); print(table(chicken_obj$stage))
+
+
+genes_all <- c("CD34", "THY1", "IL3RA", "PTPRC", "CD38", "KIT",
+               "ITGA4", "CD36", "TFRC", "ENG", "GYPA", "GYPB")
+in_h <- genes_all %in% rownames(human_obj)
+in_c <- genes_all %in% rownames(chicken_obj)
+cat("Missing in human:  ", genes_all[!in_h], "\n")
+cat("Missing in chicken:", genes_all[!in_c], "\n")
+
+genes_both <- genes_all[in_h & in_c]
+cat("Plotting", length(genes_both), "genes present in both species:", genes_both, "\n")
+
+
+theme_dot <- function() {
+  theme_classic(base_size = 11) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+          axis.text.y = element_text(face = "bold"),
+          plot.title = element_text(face = "bold", hjust = 0.5))
+}
+
+p_h <- DotPlot(human_obj, features = genes_both, group.by = "stage",
+               dot.scale = 7, cols = c("lightgrey", "red"), scale.min = 0, scale.max = 100) +
+  labs(title = "Human", x = NULL, y = NULL, color = "Average expression",
+       size = "Percent expressed") + theme_dot()
+
+p_c <- DotPlot(chicken_obj, features = genes_both, group.by = "stage",
+               dot.scale = 7, cols = c("lightgrey", "red"), scale.min = 0, scale.max = 100) +
+  labs(title = "Chicken", x = NULL, y = NULL, color = "Average expression",
+       size = "Percent expressed") + theme_dot()
+
+combined <- p_h + p_c + plot_layout(guides = "collect") +
+  plot_annotation(
+    caption = paste0("No annotated chicken ortholog in this dataset: ",
+                     paste(genes_all[!in_c], collapse = ", "),
+                     ". Colour scale is set within each panel; compare dot size across species."),
+    theme = theme(plot.caption = element_text(hjust = 0.5, size = 9)))
+
+ggsave("./Results/S.Fig_5A_human_vs_chicken.pdf", combined, width = 14, height = 4.5)
+cat("--- DONE: S.Fig_5A_human_vs_chicken.pdf ---\n")
+
+
+```
+
+
+
+
+
+

@@ -1,0 +1,14 @@
+{
+  "title": "Comparative single-cell analysis of human and chicken erythropoiesis highlights nuclear retention and early avian erythroid immunity",
+  "upload_type": "software",
+  "description": "Inefficient enucleation of human induced pluripotent stem cell (iPSC)-derived erythrocytes remains a primary bottleneck in synthetic blood production. To identify barriers to nuclear extrusion, we utilize the evolutionary divergence and generated a nine-stage single-cell atlas of chicken erythropoiesis (nucleated erythrocytes) to compare with a human reference (enucleated erythrocytes). Computational analysis revealed distinct terminal maturation programs, characterized by the persistence of vimentin (VIM) transcripts and a shifted timing of serum response factor (SRF) activity in chickens compared to humans. Phylogenetic analysis identified a candidate MRM-HDA motif in the chicken vimentin head domain, which we propose acts as a protease-resistant structural scaffold. To test this, we employed a sequential pharmacological regimen targeting the Vimentin-RhoA-Caspase axis in chicken embryos. This treatment significantly reduced vimentin intensity and increased nuclear polarization but was insufficient to induce complete nuclear extrusion. Additionally, we investigated the ontogeny of avian erythroid immunity, finding that erythrocytes mount an interferon-pathway response to LPS challenges as early as embryonic day 9 (E9). We further observed that pharmacological inhibition of SOCS1 via a pJAK2 peptide amplified the JAK-STAT-MX1 immune axis in post-hatch chickens. In conclusion, this work characterizes the evolutionary constraints of avian nuclear retention and establishes the developmental ontogeny of avian erythroid immunity, providing critical insights for both synthetic blood production and avian vaccine development.",
+  "creators": [
+    {"name": "Jahejo, Ali Raza"},
+    {"name": "Yang, Yukun"},
+    {"name": "Yu, Lintian"},
+    {"name": "Bukhari, Sayyad Ali Raza"},
+    {"name": "Lu, Yangqing"}
+  ],
+  "license": "MIT",
+  "keywords": ["single-cell RNA-seq", "erythropoiesis", "chicken", "enucleation", "vimentin"]
+}
